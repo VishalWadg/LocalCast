@@ -1,0 +1,97 @@
+name: LocalCast Android CI/CD (Main Branch APK Build)
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    name: Build Debug APK & Run Unit Tests (M0–M4 · API 37 / AGP 9.1.1)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Set up Android SDK for API 37 (Android 17)
+        uses: android-actions/setup-android@v3
+
+      - name: Accept Android SDK Licenses & Install API 37 Platform
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platform-tools" "build-tools;36.0.0"
+          # Install Android 17 (API 37) platform (supports both android-37.0 and android-37 package IDs)
+          sdkmanager "platforms;android-37.0" || sdkmanager "platforms;android-37"
+          sdkmanager "build-tools;37.0.0" || true
+
+      - name: Set up Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
+
+      - name: Run M0–M4 Unit Tests
+        run: gradle :app:testDebugUnitTest --stacktrace --no-daemon
+
+      - name: Assemble Debug APK
+        run: gradle :app:assembleDebug --stacktrace --no-daemon
+
+      - name: Stage APK Deliverable
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk dist/LocalCast-poc-v0.1.0-debug.apk
+          ls -lh dist/LocalCast-poc-v0.1.0-debug.apk
+
+      - name: Upload APK to GitHub Actions Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: LocalCast-poc-v0.1.0-debug-apk
+          path: dist/LocalCast-poc-v0.1.0-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Send APK to Telegram Group
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "::warning::TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not set in repository secrets. Skipping Telegram delivery."
+          else
+            echo "Sending APK to Telegram chat $TELEGRAM_CHAT_ID..."
+            RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
+              -F chat_id="$TELEGRAM_CHAT_ID" \
+              -F document=@"dist/LocalCast-poc-v0.1.0-debug.apk" \
+              -F caption="🚀 LocalCast POC v0.1 Automated Build (Run #${{ github.run_number }})%0ACommit: ${{ github.sha }}" \
+              "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument")
+            echo "Response: $RESPONSE"
+          fi
+
+      - name: Publish Automated GitHub Release on Push to main (No Manual Tag Needed)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: main-latest
+          name: "LocalCast POC v0.1 Automated Build (main #${{ github.run_number }})"
+          body: |
+            Automated Debug APK build from `main` branch commit `${{ github.sha }}`.
+            - **Milestones included:** M0 (WebRTC Native Engine Init) + M1 (Wi-Fi Binding & Ktor Local WebSocket Signaling) + M2 (WebRTC SDP Offer/Answer & Local Host-Candidate ICE) + M3 (Camera2 720p/480p + Microphone Streaming & Compose SurfaceViewRenderer) + M4 (StreamingForegroundService & Ongoing Notification)
+            - **Toolchain:** AGP 9.1.1 · Gradle 9.3.1 · Kotlin 2.4.21 · JDK 17 · Compile/Target SDK 37 · Min SDK 29
+          files: dist/LocalCast-poc-v0.1.0-debug.apk
+          prerelease: true
+          make_latest: "false"

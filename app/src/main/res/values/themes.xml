@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Uses built-in platform Material NoActionBar theme so no AppCompat XML dependency is needed -->
+    <style name="Theme.LocalCast" parent="@android:style/Theme.Material.Light.NoActionBar" />
+</resources>
