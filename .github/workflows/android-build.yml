@@ -90,18 +90,16 @@ jobs:
           fi
 
           echo "Preparing Telegram release notification..."
-          CAPTION="🚀 <b>New LocalCast Release: v0.1.0-poc</b>
-A new Android build has been built and published!
-
-<b>What's New:</b>
-• WebRTC native engine initialization (M0)
-• Local Wi-Fi socket signaling via Ktor (M1)
-• WebRTC SDP offer/answer & local host-candidate ICE (M2)
-• Camera2 720p/480p & mic live streaming (M3)
-• StreamingForegroundService & ongoing persistent notification (M4)
-
-📥 <a href=\"https://github.com/${{ github.repository }}/releases/download/main-latest/LocalCast-poc-v0.1.0-debug.apk\">Direct APK Download</a>
-🌐 <a href=\"https://github.com/${{ github.repository }}/releases/tag/main-latest\">GitHub Release Notes</a>"
+          CAPTION="🚀 <b>New LocalCast Release: v0.1.0-poc</b>"$'\n'
+          CAPTION+="A new Android build has been built and published!"$'\n\n'
+          CAPTION+="<b>What's New:</b>"$'\n'
+          CAPTION+="• WebRTC native engine initialization (M0)"$'\n'
+          CAPTION+="• Local Wi-Fi socket signaling via Ktor (M1)"$'\n'
+          CAPTION+="• WebRTC SDP offer/answer & local host-candidate ICE (M2)"$'\n'
+          CAPTION+="• Camera2 720p/480p & mic live streaming (M3)"$'\n'
+          CAPTION+="• StreamingForegroundService & ongoing persistent notification (M4)"$'\n\n'
+          CAPTION+="📥 <a href=\"https://github.com/${{ github.repository }}/releases/download/main-latest/LocalCast-poc-v0.1.0-debug.apk\">Direct APK Download</a>"$'\n'
+          CAPTION+="🌐 <a href=\"https://github.com/${{ github.repository }}/releases/tag/main-latest\">GitHub Release Notes</a>"
 
           echo "Dispatching APK to Telegram chat ID: $TELEGRAM_CHAT_ID..."
           RESPONSE=$(curl -s -S \
