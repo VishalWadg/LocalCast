@@ -21,19 +21,19 @@ object SignalCodec {
     fun encode(message: SignalMessage): String {
         val sb = StringBuilder(512)
         sb.append('{')
-        sb.append(""v":").append(message.v).append(',')
-        sb.append(""messageId":"").append(escapeJson(message.messageId)).append("",")
-        sb.append(""sessionId":"").append(escapeJson(message.sessionId)).append("",")
-        sb.append(""type":"").append(message.type.name).append("",")
-        sb.append(""fromDeviceId":"").append(escapeJson(message.fromDeviceId)).append("",")
-        sb.append(""toDeviceId":"").append(escapeJson(message.toDeviceId)).append("",")
-        sb.append(""sentAtMs":").append(message.sentAtMs).append(',')
-        sb.append(""payload":{")
+        sb.append("\"v\":").append(message.v).append(',')
+        sb.append("\"messageId\":\"").append(escapeJson(message.messageId)).append("\",")
+        sb.append("\"sessionId\":\"").append(escapeJson(message.sessionId)).append("\",")
+        sb.append("\"type\":\"").append(message.type.name).append("\",")
+        sb.append("\"fromDeviceId\":\"").append(escapeJson(message.fromDeviceId)).append("\",")
+        sb.append("\"toDeviceId\":\"").append(escapeJson(message.toDeviceId)).append("\",")
+        sb.append("\"sentAtMs\":").append(message.sentAtMs).append(',')
+        sb.append("\"payload\":{")
         var first = true
         for ((k, v) in message.payload) {
             if (!first) sb.append(',')
             first = false
-            sb.append('"').append(escapeJson(k)).append("":"")
+            sb.append('"').append(escapeJson(k)).append("\":\"")
                 .append(escapeJson(v)).append('"')
         }
         sb.append("}}")
@@ -141,7 +141,7 @@ object SignalCodec {
         for (ch in value) {
             when (ch) {
                 '\\' -> sb.append("\\\\")
-                '"' -> sb.append("\\"")
+                '"' -> sb.append("\\\"")
                 '\b' -> sb.append("\\b")
                 '\u000C' -> sb.append("\\f")
                 '\n' -> sb.append("\\n")

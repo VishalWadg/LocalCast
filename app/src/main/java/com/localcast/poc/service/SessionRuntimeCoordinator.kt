@@ -19,6 +19,7 @@ import com.localcast.poc.model.WebRtcSessionStatus
 import com.localcast.poc.network.LocalNetworkPermissionHelper
 import com.localcast.poc.network.WifiNetworkController
 import com.localcast.poc.rtc.MediaEngine
+import com.localcast.poc.rtc.PeerSession
 import com.localcast.poc.rtc.PeerSessionCallback
 import com.localcast.poc.rtc.WebRtcFactory
 import com.localcast.poc.signaling.LocalSignalingServer
