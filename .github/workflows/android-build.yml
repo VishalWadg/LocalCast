@@ -64,24 +64,6 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Send APK to Telegram Group
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
-            echo "::warning::TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not set in repository secrets. Skipping Telegram delivery."
-          else
-            echo "Sending APK to Telegram chat $TELEGRAM_CHAT_ID..."
-            RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" \
-              -F chat_id="$TELEGRAM_CHAT_ID" \
-              -F document=@"dist/LocalCast-poc-v0.1.0-debug.apk" \
-              -F caption="🚀 LocalCast POC v0.1 Automated Build (Run #${{ github.run_number }})%0ACommit: ${{ github.sha }}" \
-              "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument")
-            echo "Response: $RESPONSE"
-          fi
-
       - name: Publish Automated GitHub Release on Push to main (No Manual Tag Needed)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
@@ -95,3 +77,45 @@ jobs:
           files: dist/LocalCast-poc-v0.1.0-debug.apk
           prerelease: true
           make_latest: "false"
+
+      - name: Send APK to Telegram Group
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "::error::TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing from repository secrets!"
+            exit 1
+          fi
+
+          echo "Preparing Telegram release notification..."
+          CAPTION="🚀 <b>New LocalCast Release: v0.1.0-poc</b>
+A new Android build has been built and published!
+
+<b>What's New:</b>
+• WebRTC native engine initialization (M0)
+• Local Wi-Fi socket signaling via Ktor (M1)
+• WebRTC SDP offer/answer & local host-candidate ICE (M2)
+• Camera2 720p/480p & mic live streaming (M3)
+• StreamingForegroundService & ongoing persistent notification (M4)
+
+📥 <a href=\"https://github.com/${{ github.repository }}/releases/download/main-latest/LocalCast-poc-v0.1.0-debug.apk\">Direct APK Download</a>
+🌐 <a href=\"https://github.com/${{ github.repository }}/releases/tag/main-latest\">GitHub Release Notes</a>"
+
+          echo "Dispatching APK to Telegram chat ID: $TELEGRAM_CHAT_ID..."
+          RESPONSE=$(curl -s -S \
+            -F "chat_id=$TELEGRAM_CHAT_ID" \
+            -F "document=@dist/LocalCast-poc-v0.1.0-debug.apk" \
+            -F "caption=$CAPTION" \
+            -F "parse_mode=HTML" \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument")
+
+          echo "Telegram Response: $RESPONSE"
+
+          if ! echo "$RESPONSE" | grep -q '"ok":true'; then
+            echo "::error::Telegram delivery failed: $RESPONSE"
+            exit 1
+          fi
+
+          echo "Telegram delivery succeeded!"
