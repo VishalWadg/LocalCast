@@ -2,7 +2,43 @@
 
 **Android-first · Local Wi-Fi LAN · Offline-Capable · SDK 37 · AGP 9.1.1**
 
-This repository contains the complete **POC v0.1 (Milestones M0 through M4)** Android Studio project for **LocalCast**, architected for seamless extension into Milestones M5–M8 (`LocalCast Complete Product Scope v1.0`).
+LocalCast is an offline-capable, peer-to-peer (P2P) real-time video and audio streaming Android application. It allows two Android devices connected to the same local Wi-Fi network to stream 720p/480p camera video and microphone audio with sub-100ms latency without requiring internet access, cloud databases, or third-party servers.
+
+---
+
+## 📚 Documentation & Learning Guides
+
+Whether you're exploring the codebase, learning WebRTC, or preparing a technical presentation, check out these modular guides:
+
+| Guide | Description |
+|---|---|
+| **[Architecture & Mental Model Guide](docs/ARCHITECTURE.md)** | Beginner-friendly explanation of WebRTC, the Hotel Intercom analogy, milestone breakdowns (M0–M4), and interactive Mermaid sequence diagrams. |
+| **[Tech Stack & Architectural Decisions (ADRs)](docs/TECH_STACK_AND_DECISIONS.md)** | Deep-dive into *why* each technology was chosen (WebRTC native, Ktor CIO, Camera2, zero-STUN design) with trade-off analyses. |
+| **[Beginner's Cheat Sheet & Presentation Guide](docs/BEGINNER_CHEATSHEET.md)** | Plain-English glossary, answers to top 10 interview questions, and a step-by-step 3-minute live demonstration script. |
+| **[ADR-0001 Architecture Specification](docs/ADR-0001-poc-m0-to-m4-architecture.md)** | Formal Architecture Decision Record for the POC v0.1 milestone specification. |
+
+---
+
+## ⚡ How It Works in 30 Seconds
+
+```text
+Phone A (Host / Publisher)                        Phone B (Receiver / Client)
+┌────────────────────────┐                       ┌────────────────────────┐
+│  Ktor WebSocket Server │ ◄── HELLO / JOIN ───  │  Ktor WebSocket Client │
+│  (Port 8765 on Wi-Fi)  │ ─── JOIN_ACCEPT ────► │  (ws://192.168.x.x)    │
+│                        │                       │                        │
+│  Creates SDP Offer     │ ─── SDP OFFER ──────► │  Applies Remote Offer  │
+│  Applies Remote Answer │ ◄── SDP ANSWER ────── │  Creates SDP Answer    │
+│                        │                       │                        │
+│  Local Host ICE        │ ◄── ICE CANDIDATE ──► │  Local Host ICE        │
+└───────────┬────────────┘                       └───────────┬────────────┘
+            │                                                ▲
+            ▼                                                │
+    ═════════════════════════════════════════════════════════════════
+     DIRECT WebRTC RTP STREAM (UDP) — Camera2 720p@30 + Opus Audio
+     * No Internet * No Cloud * No STUN/TURN * Latency < 100ms *
+    ═════════════════════════════════════════════════════════════════
+```
 
 ---
 

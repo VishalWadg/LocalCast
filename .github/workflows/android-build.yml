@@ -101,13 +101,29 @@ jobs:
           CAPTION+="📥 <a href=\"https://github.com/${{ github.repository }}/releases/download/main-latest/LocalCast-poc-v0.1.0-debug.apk\">Direct APK Download</a>"$'\n'
           CAPTION+="🌐 <a href=\"https://github.com/${{ github.repository }}/releases/tag/main-latest\">GitHub Release Notes</a>"
 
-          echo "Dispatching APK to Telegram chat ID: $TELEGRAM_CHAT_ID..."
-          RESPONSE=$(curl -s -S \
-            -F "chat_id=$TELEGRAM_CHAT_ID" \
-            -F "document=@dist/LocalCast-poc-v0.1.0-debug.apk" \
-            -F "caption=$CAPTION" \
-            -F "parse_mode=HTML" \
-            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument")
+          APK_PATH="dist/LocalCast-poc-v0.1.0-debug.apk"
+          FILE_SIZE=$(wc -c < "$APK_PATH" | tr -d ' ')
+          echo "Staged APK Size: $FILE_SIZE bytes"
+
+          # Telegram Bot API enforces a strict 50 MB limit for direct sendDocument uploads
+          MAX_BYTES=50000000
+
+          if [ "$FILE_SIZE" -le "$MAX_BYTES" ]; then
+            echo "APK is within 50MB ceiling. Sending document directly to Telegram chat ID: $TELEGRAM_CHAT_ID..."
+            RESPONSE=$(curl -s -S \
+              -F "chat_id=$TELEGRAM_CHAT_ID" \
+              -F "document=@$APK_PATH" \
+              -F "caption=$CAPTION" \
+              -F "parse_mode=HTML" \
+              "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument")
+          else
+            echo "APK exceeds 50MB Telegram ceiling ($FILE_SIZE bytes). Sending release announcement card via sendMessage..."
+            RESPONSE=$(curl -s -S \
+              -F "chat_id=$TELEGRAM_CHAT_ID" \
+              -F "text=$CAPTION" \
+              -F "parse_mode=HTML" \
+              "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage")
+          fi
 
           echo "Telegram Response: $RESPONSE"
 
