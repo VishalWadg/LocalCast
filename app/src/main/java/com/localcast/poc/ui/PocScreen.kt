@@ -611,7 +611,7 @@ private fun JoinSetupCard(
 @Composable
 private fun HostWaitingBanner(
     localIp: String?,
-    sessionCode: String,
+    sessionCode: String? = null,
     isIpCopied: Boolean,
     onCopyIp: (String) -> Unit
 ) {
@@ -665,7 +665,7 @@ private fun HostWaitingBanner(
                     )
                 }
             }
-            if (sessionCode.isNotBlank()) {
+            if (!sessionCode.isNullOrBlank()) {
                 Text(
                     text = "Join Code: $sessionCode",
                     fontFamily = FontFamily.Monospace,
