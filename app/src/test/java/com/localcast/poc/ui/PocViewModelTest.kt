@@ -294,7 +294,7 @@ class PocViewModelTest {
         )
 
         val dummyScope = SaverScope { true }
-        val saved = PocUiState.Saver.save(dummyScope, original)
+        val saved = with(PocUiState.Saver) { dummyScope.save(original) }
         assertNotNull("Saved state list must not be null", saved)
         assertTrue("Saved state must be a List", saved is List<*>)
 
