@@ -5,7 +5,7 @@ import com.localcast.poc.model.MediaEngineStatus
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceViewRenderer
 import java.util.Collections
-import java.util.concurrent.ConcurrentHashMap
+import java.util.IdentityHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -51,8 +51,8 @@ class FakeMediaEngine : MediaEngine {
     @Volatile var isReleased: Boolean = false
         private set
 
-    val boundLocalRenderers = Collections.newSetFromMap(ConcurrentHashMap<SurfaceViewRenderer, Boolean>())
-    val boundRemoteRenderers = Collections.newSetFromMap(ConcurrentHashMap<SurfaceViewRenderer, Boolean>())
+    val boundLocalRenderers: MutableSet<SurfaceViewRenderer> = Collections.synchronizedSet(Collections.newSetFromMap(IdentityHashMap<SurfaceViewRenderer, Boolean>()))
+    val boundRemoteRenderers: MutableSet<SurfaceViewRenderer> = Collections.synchronizedSet(Collections.newSetFromMap(IdentityHashMap<SurfaceViewRenderer, Boolean>()))
 
     var activeCallback: PeerSessionCallback? = null
         private set
@@ -253,22 +253,22 @@ class FakeMediaEngine : MediaEngine {
 
     override fun bindLocalVideoRenderer(renderer: SurfaceViewRenderer, mirror: Boolean) {
         boundLocalRenderers.add(renderer)
-        capturedLogs.add("Bound local video renderer: $renderer (mirror=$mirror)")
+        capturedLogs.add("Bound local video renderer: ${renderer.javaClass.simpleName}@${System.identityHashCode(renderer)} (mirror=$mirror)")
     }
 
     override fun unbindLocalVideoRenderer(renderer: SurfaceViewRenderer) {
         boundLocalRenderers.remove(renderer)
-        capturedLogs.add("Unbound local video renderer: $renderer")
+        capturedLogs.add("Unbound local video renderer: ${renderer.javaClass.simpleName}@${System.identityHashCode(renderer)}")
     }
 
     override fun bindRemoteVideoRenderer(renderer: SurfaceViewRenderer) {
         boundRemoteRenderers.add(renderer)
-        capturedLogs.add("Bound remote video renderer: $renderer")
+        capturedLogs.add("Bound remote video renderer: ${renderer.javaClass.simpleName}@${System.identityHashCode(renderer)}")
     }
 
     override fun unbindRemoteVideoRenderer(renderer: SurfaceViewRenderer) {
         boundRemoteRenderers.remove(renderer)
-        capturedLogs.add("Unbound remote video renderer: $renderer")
+        capturedLogs.add("Unbound remote video renderer: ${renderer.javaClass.simpleName}@${System.identityHashCode(renderer)}")
     }
 
     override fun release() {
