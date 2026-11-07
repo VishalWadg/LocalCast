@@ -102,28 +102,33 @@ jobs:
           CAPTION+="🌐 <a href=\"https://github.com/${{ github.repository }}/releases/tag/main-latest\">GitHub Release Notes</a>"
 
           APK_PATH="dist/LocalCast-poc-v0.1.0-debug.apk"
+          if [ ! -f "$APK_PATH" ]; then
+            echo "::error::Staged APK deliverable not found at $APK_PATH!"
+            exit 1
+          fi
+
           FILE_SIZE=$(wc -c < "$APK_PATH" | tr -d ' ')
           echo "Staged APK Size: $FILE_SIZE bytes"
 
-          # Telegram Bot API enforces a strict 50 MB limit for direct sendDocument uploads
+          # Telegram Bot API enforces a strict 50 MB (50,000,000 bytes) limit for sendDocument uploads
           MAX_BYTES=50000000
 
-          if [ "$FILE_SIZE" -le "$MAX_BYTES" ]; then
-            echo "APK is within 50MB ceiling. Sending document directly to Telegram chat ID: $TELEGRAM_CHAT_ID..."
-            RESPONSE=$(curl -s -S \
-              -F "chat_id=$TELEGRAM_CHAT_ID" \
-              -F "document=@$APK_PATH" \
-              -F "caption=$CAPTION" \
-              -F "parse_mode=HTML" \
-              "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument")
-          else
-            echo "APK exceeds 50MB Telegram ceiling ($FILE_SIZE bytes). Sending release announcement card via sendMessage..."
-            RESPONSE=$(curl -s -S \
-              -F "chat_id=$TELEGRAM_CHAT_ID" \
-              -F "text=$CAPTION" \
-              -F "parse_mode=HTML" \
-              "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage")
+          if [ "$FILE_SIZE" -gt "$MAX_BYTES" ]; then
+            echo "::error::Staged APK size ($FILE_SIZE bytes) strictly exceeds the Telegram Bot API 50 MB limit ($MAX_BYTES bytes)!"
+            exit 1
           fi
+
+          echo "APK is within 50MB ceiling ($FILE_SIZE <= $MAX_BYTES bytes). Sending document directly to Telegram chat ID: $TELEGRAM_CHAT_ID..."
+          RESPONSE=$(curl -s -S \
+            --retry 3 \
+            --retry-delay 5 \
+            --connect-timeout 30 \
+            --max-time 300 \
+            -F "chat_id=$TELEGRAM_CHAT_ID" \
+            -F "document=@$APK_PATH" \
+            -F "caption=$CAPTION" \
+            -F "parse_mode=HTML" \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument")
 
           echo "Telegram Response: $RESPONSE"
 

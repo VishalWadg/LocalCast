@@ -53,12 +53,12 @@ class MainActivity : ComponentActivity() {
                         pendingPostPermissionAction = { viewModel.startHostingAndShare() }
                         multiPermissionLauncher.launch(needed.toTypedArray())
                     },
-                    onRequestPermissionsAndConnectClient = { ip, code ->
+                    onRequestPermissionsAndConnectClient = { ip, port, code ->
                         val needed = LocalNetworkPermissionHelper.requiredReceiverPermissions()
                         if (needed.isEmpty()) {
-                            viewModel.connectToHost(ip, 8765, code)
+                            viewModel.connectToHost(ip, port, code)
                         } else {
-                            pendingPostPermissionAction = { viewModel.connectToHost(ip, 8765, code) }
+                            pendingPostPermissionAction = { viewModel.connectToHost(ip, port, code) }
                             multiPermissionLauncher.launch(needed.toTypedArray())
                         }
                     },
@@ -74,7 +74,8 @@ class MainActivity : ComponentActivity() {
                     onBindLocalRenderer = { viewModel.bindLocalVideoRenderer(it) },
                     onUnbindLocalRenderer = { viewModel.unbindLocalVideoRenderer(it) },
                     onBindRemoteRenderer = { viewModel.bindRemoteVideoRenderer(it) },
-                    onUnbindRemoteRenderer = { viewModel.unbindRemoteVideoRenderer(it) }
+                    onUnbindRemoteRenderer = { viewModel.unbindRemoteVideoRenderer(it) },
+                    viewModel = viewModel
                 )
             }
         }

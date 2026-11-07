@@ -1,85 +1,203 @@
 package com.localcast.poc.ui
 
 import android.app.Application
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
 import com.localcast.poc.model.SessionState
 import com.localcast.poc.service.SessionRuntimeCoordinator
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import org.webrtc.SurfaceViewRenderer
 
 /**
  * Observable UI state holder for `PocScreen` across Milestones M0–M4.
  *
- * Delegates all WebRTC, Camera/Mic, ForegroundService, and Ktor WebSocket operations to
- * [SessionRuntimeCoordinator] so active streams survive Activity minimization or recreation.
+ * Manages UI mode selection (Host vs Join), input validation, collapsible diagnostics,
+ * and clipboard copy operations, delegating WebRTC, Camera/Mic, ForegroundService,
+ * and Ktor WebSocket operations to [SessionRuntimeCoordinator].
  */
-class PocViewModel(application: Application) : AndroidViewModel(application) {
+class PocViewModel @JvmOverloads constructor(
+    application: Application,
+    coordinator: SessionRuntimeCoordinator? = null
+) : AndroidViewModel(application) {
 
-    private val coordinator = SessionRuntimeCoordinator.getInstance(application)
+    private val actualCoordinator: SessionRuntimeCoordinator by lazy {
+        coordinator ?: SessionRuntimeCoordinator.getInstance(application)
+    }
 
-    val state: StateFlow<SessionState> = coordinator.state
+    val state: StateFlow<SessionState> by lazy {
+        actualCoordinator.state
+    }
+
+    private val _uiState = MutableStateFlow(PocUiState())
+    val uiState: StateFlow<PocUiState> = _uiState.asStateFlow()
+
+    // --- UI State Handling (Requirement R3) ---
+
+    fun selectMode(mode: UiMode) {
+        _uiState.update { it.copy(selectedMode = mode, inputError = null) }
+    }
+
+    fun selectTab(tab: SetupTab) = selectMode(tab)
+
+    fun onTabSelected(tab: UiMode) = selectMode(tab)
+
+    fun updateHostIp(ip: String) {
+        _uiState.update { it.copy(hostIpInput = ip, inputError = null) }
+    }
+
+    fun onTargetIpChanged(ip: String) = updateHostIp(ip)
+
+    fun updateHostPort(port: String) {
+        _uiState.update { it.copy(hostPortInput = port, inputError = null) }
+    }
+
+    fun updateTargetPort(port: String) = updateHostPort(port)
+
+    fun onTargetPortChanged(port: String) = updateHostPort(port)
+
+    fun updateJoinCode(code: String) {
+        _uiState.update { it.copy(joinCodeInput = code) }
+    }
+
+    fun onJoinCodeChanged(code: String) = updateJoinCode(code)
+
+    fun toggleDiagnostics() {
+        _uiState.update { it.copy(isDiagnosticsExpanded = !it.isDiagnosticsExpanded) }
+    }
+
+    fun onToggleDiagnostics() = toggleDiagnostics()
+
+    fun setDiagnosticsExpanded(expanded: Boolean) {
+        _uiState.update { it.copy(isDiagnosticsExpanded = expanded) }
+    }
+
+    fun setInputError(error: String?) {
+        _uiState.update { it.copy(inputError = error) }
+    }
+
+    fun clearInputError() {
+        _uiState.update { it.copy(inputError = null) }
+    }
+
+    fun setIpCopied(copied: Boolean) {
+        _uiState.update { it.copy(isIpCopied = copied) }
+    }
+
+    fun copyHostIpToClipboard(customIp: String? = null): Boolean {
+        val ipToCopy = customIp?.takeIf { it.isNotBlank() }
+            ?: runCatching { actualCoordinator.state.value.wifiStatus.localIpv4Address }.getOrNull()?.takeIf { it.isNotBlank() }
+            ?: return false
+
+        runCatching {
+            val clipboard = getApplication<Application>().getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+            val clip = ClipData.newPlainText("LocalCast Host IP", ipToCopy)
+            clipboard?.setPrimaryClip(clip)
+        }
+
+        _uiState.update { it.copy(isIpCopied = true) }
+        viewModelScope.launch {
+            delay(2000)
+            _uiState.update { it.copy(isIpCopied = false) }
+        }
+        return true
+    }
+
+    fun onCopyIpClicked() {
+        copyHostIpToClipboard()
+    }
+
+    fun validateJoinInputs(): Boolean {
+        val current = _uiState.value
+        val (ipValid, ipError) = UiValidators.validateHostIp(current.hostIpInput)
+        if (!ipValid) {
+            _uiState.update { it.copy(inputError = ipError) }
+            return false
+        }
+        val (portValid, portError) = UiValidators.validateSignalingPort(current.hostPortInput)
+        if (!portValid) {
+            _uiState.update { it.copy(inputError = portError) }
+            return false
+        }
+        val (codeValid, codeError) = UiValidators.validateJoinCode(current.joinCodeInput)
+        if (!codeValid) {
+            _uiState.update { it.copy(inputError = codeError) }
+            return false
+        }
+        _uiState.update { it.copy(inputError = null) }
+        return true
+    }
+
+    // --- Delegation to SessionRuntimeCoordinator ---
 
     fun onPermissionResult() {
-        coordinator.refreshEnvironmentStatus()
+        actualCoordinator.refreshEnvironmentStatus()
     }
 
     fun initializeWebRtcEngine() {
-        coordinator.initializeMediaEngine()
+        actualCoordinator.initializeMediaEngine()
     }
 
     fun bindToWifi() {
-        coordinator.bindWifiNetwork()
+        actualCoordinator.bindWifiNetwork()
     }
 
     fun startHostingAndShare(port: Int = 8765) {
-        coordinator.startHostingAndPreview(port)
+        actualCoordinator.startHostingAndPreview(port)
     }
 
     fun connectToHost(hostIp: String, port: Int = 8765, joinCode: String = "") {
-        coordinator.connectToHost(hostIp = hostIp, port = port, joinCode = joinCode)
+        actualCoordinator.connectToHost(hostIp = hostIp, port = port, joinCode = joinCode)
     }
 
     fun approveJoinRequest() {
-        coordinator.approvePendingJoinRequest()
+        actualCoordinator.approvePendingJoinRequest()
     }
 
     fun rejectJoinRequest() {
-        coordinator.rejectPendingJoinRequest()
+        actualCoordinator.rejectPendingJoinRequest()
     }
 
     fun toggleLocalMic() {
-        coordinator.toggleLocalMicrophone()
+        actualCoordinator.toggleLocalMicrophone()
     }
 
     fun toggleLocalCamera() {
-        coordinator.toggleLocalCamera()
+        actualCoordinator.toggleLocalCamera()
     }
 
     fun switchCamera() {
-        coordinator.switchCamera()
+        actualCoordinator.switchCamera()
     }
 
     fun sendPing() {
-        coordinator.sendPing()
+        actualCoordinator.sendPing()
     }
 
     fun stopSession() {
-        coordinator.stopSession()
+        actualCoordinator.stopSession()
     }
 
     fun bindLocalVideoRenderer(renderer: SurfaceViewRenderer) {
-        coordinator.bindLocalVideoRenderer(renderer)
+        actualCoordinator.bindLocalVideoRenderer(renderer)
     }
 
     fun unbindLocalVideoRenderer(renderer: SurfaceViewRenderer) {
-        coordinator.unbindLocalVideoRenderer(renderer)
+        actualCoordinator.unbindLocalVideoRenderer(renderer)
     }
 
     fun bindRemoteVideoRenderer(renderer: SurfaceViewRenderer) {
-        coordinator.bindRemoteVideoRenderer(renderer)
+        actualCoordinator.bindRemoteVideoRenderer(renderer)
     }
 
     fun unbindRemoteVideoRenderer(renderer: SurfaceViewRenderer) {
-        coordinator.unbindRemoteVideoRenderer(renderer)
+        actualCoordinator.unbindRemoteVideoRenderer(renderer)
     }
 }

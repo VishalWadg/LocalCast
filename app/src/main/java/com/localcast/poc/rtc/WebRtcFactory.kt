@@ -11,10 +11,12 @@ import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
 import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
+import org.webrtc.VideoSink
 import org.webrtc.audio.AudioDeviceModule
 import org.webrtc.audio.JavaAudioDeviceModule
 import java.util.Collections
 import java.util.IdentityHashMap
+import java.util.concurrent.CopyOnWriteArraySet
 
 /**
  * Default [MediaEngine] adapter backed by `io.github.webrtc-sdk:android:150.7871.04`.
@@ -36,6 +38,7 @@ class WebRtcFactory : MediaEngine {
     private var peerSession: PeerSession? = null
 
     private val initializedRenderers = Collections.newSetFromMap(IdentityHashMap<SurfaceViewRenderer, Boolean>())
+    private val boundRemoteVideoSinks = CopyOnWriteArraySet<VideoSink>()
 
     @Volatile
     private var status: MediaEngineStatus = MediaEngineStatus(
@@ -52,6 +55,11 @@ class WebRtcFactory : MediaEngine {
             val ctx = context.applicationContext
             appContext = ctx
             if (status.initialized && peerConnectionFactory != null && eglBase != null) {
+                for (sink in boundRemoteVideoSinks) {
+                    if (sink is SurfaceViewRenderer) {
+                        ensureRendererInitialized(sink, mirror = false)
+                    }
+                }
                 return status
             }
             val abis = Build.SUPPORTED_ABIS.toList()
@@ -97,6 +105,12 @@ class WebRtcFactory : MediaEngine {
                 eglBase = createdEgl
                 audioDeviceModule = adm
                 peerConnectionFactory = factory
+
+                for (sink in boundRemoteVideoSinks) {
+                    if (sink is SurfaceViewRenderer) {
+                        ensureRendererInitialized(sink, mirror = false)
+                    }
+                }
 
                 status = MediaEngineStatus(
                     initialized = true,
@@ -188,6 +202,9 @@ class WebRtcFactory : MediaEngine {
                 isPublisher = true
             )
             if (!created) return false
+            for (sink in boundRemoteVideoSinks) {
+                session.attachRemoteVideoSink(sink)
+            }
             peerSession = session
             session.createAndSetOffer()
             return true
@@ -208,6 +225,9 @@ class WebRtcFactory : MediaEngine {
                 isPublisher = false
             )
             if (!created) return false
+            for (sink in boundRemoteVideoSinks) {
+                session.attachRemoteVideoSink(sink)
+            }
             peerSession = session
             session.applyRemoteOfferAndCreateAnswer(offerSdp)
             return true
@@ -247,11 +267,13 @@ class WebRtcFactory : MediaEngine {
     override fun unbindLocalVideoRenderer(renderer: SurfaceViewRenderer) {
         synchronized(lock) {
             cameraMicCapture?.detachLocalSink(renderer)
+            initializedRenderers.remove(renderer)
         }
     }
 
     override fun bindRemoteVideoRenderer(renderer: SurfaceViewRenderer) {
         synchronized(lock) {
+            boundRemoteVideoSinks.add(renderer)
             ensureRendererInitialized(renderer, mirror = false)
             peerSession?.attachRemoteVideoSink(renderer)
         }
@@ -260,10 +282,18 @@ class WebRtcFactory : MediaEngine {
     override fun unbindRemoteVideoRenderer(renderer: SurfaceViewRenderer) {
         synchronized(lock) {
             peerSession?.detachRemoteVideoSink(renderer)
+            boundRemoteVideoSinks.remove(renderer)
+            initializedRenderers.remove(renderer)
         }
     }
 
     private fun ensureRendererInitialized(renderer: SurfaceViewRenderer, mirror: Boolean) {
+        if (eglBase == null) {
+            val ctx = appContext ?: runCatching { renderer.context?.applicationContext }.getOrNull()
+            if (ctx != null) {
+                runCatching { initialize(ctx) }
+            }
+        }
         val eglContext = eglBase?.eglBaseContext ?: return
         if (!initializedRenderers.contains(renderer)) {
             runCatching {
@@ -291,6 +321,7 @@ class WebRtcFactory : MediaEngine {
         runCatching { cameraMicCapture?.stopCapture() }
         cameraMicCapture = null
         initializedRenderers.clear()
+        boundRemoteVideoSinks.clear()
         runCatching { peerConnectionFactory?.dispose() }
         peerConnectionFactory = null
         runCatching { audioDeviceModule?.release() }

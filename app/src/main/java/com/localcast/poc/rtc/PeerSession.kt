@@ -221,13 +221,21 @@ class PeerSession(
     }
 
     fun attachRemoteVideoSink(sink: VideoSink) {
-        remoteVideoSinks.add(sink)
-        remoteVideoTrack?.addSink(sink)
+        synchronized(lock) {
+            remoteVideoSinks.add(sink)
+            if (remoteVideoTrack != null) {
+                runCatching { remoteVideoTrack?.addSink(sink) }
+            }
+        }
     }
 
     fun detachRemoteVideoSink(sink: VideoSink) {
-        remoteVideoSinks.remove(sink)
-        runCatching { remoteVideoTrack?.removeSink(sink) }
+        synchronized(lock) {
+            remoteVideoSinks.remove(sink)
+            if (remoteVideoTrack != null) {
+                runCatching { remoteVideoTrack?.removeSink(sink) }
+            }
+        }
     }
 
     /**
@@ -243,6 +251,7 @@ class PeerSession(
                     runCatching { rVideo.removeSink(sink) }
                 }
             }
+            remoteVideoSinks.clear()
             remoteAudioTrack = null
 
             val pc = peerConnection
@@ -269,15 +278,19 @@ class PeerSession(
         when (track) {
             is VideoTrack -> {
                 track.setEnabled(true)
-                remoteVideoTrack = track
-                for (sink in remoteVideoSinks) {
-                    track.addSink(sink)
+                synchronized(lock) {
+                    remoteVideoTrack = track
+                    for (sink in remoteVideoSinks) {
+                        runCatching { track.addSink(sink) }
+                    }
                 }
                 callback.onRemoteVideoTrackAvailable()
             }
             is AudioTrack -> {
                 track.setEnabled(true)
-                remoteAudioTrack = track
+                synchronized(lock) {
+                    remoteAudioTrack = track
+                }
                 callback.onRemoteAudioTrackAvailable()
             }
         }

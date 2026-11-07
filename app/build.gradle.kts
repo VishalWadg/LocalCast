@@ -17,6 +17,10 @@ android {
         versionName = "0.1.0-poc"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            abiFilters.addAll(listOf("arm64-v8a", "armeabi-v7a"))
+        }
     }
 
     buildTypes {
@@ -43,6 +47,9 @@ android {
 
     // Prevent DuplicateRelativeFileException when bundling Ktor Server CIO + Ktor Client CIO + Coroutines
     packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
         resources {
             excludes += setOf(
                 "/META-INF/{AL2.0,LGPL2.1}",

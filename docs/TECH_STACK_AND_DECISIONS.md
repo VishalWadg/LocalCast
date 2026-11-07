@@ -103,12 +103,18 @@ If you are explaining this project in a code review, technical presentation, or 
 
 ---
 
-### ADR-8: Telegram CI/CD Delivery Fallback (50 MB Limit Guardrail)
+### ADR-8: Telegram CI/CD Direct Binary Delivery & Packaging Optimization (<50 MB Limit)
 
-* **Context:** The GitHub Actions pipeline compiles `LocalCast-poc-v0.1.0-debug.apk` and notifies a Telegram group.
-* **Problem:** Telegram Bot API (`api.telegram.org`) enforces a hard **50 MB** ceiling on direct `sendDocument` uploads. Because LocalCast bundles WebRTC native libraries for all 4 CPU architectures (`arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64`), the fat debug binary is ~81.67 MB.
-* **The Decision:** The CI script measures file size:
-  - If $\le$ 50 MB: Transmits the APK directly via `sendDocument`.
-  - If $>$ 50 MB: Transmits a rich HTML release card via `sendMessage` with direct CDN download links to the GitHub Release.
+* **Context:** The GitHub Actions pipeline compiles `LocalCast-poc-v0.1.0-debug.apk` and delivers the deliverable binary directly to the Telegram group via the Telegram Bot API (`api.telegram.org`).
+* **Problem:** Telegram Bot API enforces a hard **50 MB (50,000,000 bytes)** ceiling on direct `sendDocument` binary uploads. Uncompressed native WebRTC binaries across 4 CPU architectures previously ballooned the fat debug APK to ~81.67 MB, which previously triggered a text-only `sendMessage` fallback.
+* **The Decision:**
+  1. **Packaging Optimization:**
+     - Configure `packaging.jniLibs.useLegacyPackaging = true` in `app/build.gradle.kts` to enable DEFLATE compression on native libraries.
+     - Restrict packaged ABIs via `defaultConfig.ndk.abiFilters.addAll(listOf("arm64-v8a", "armeabi-v7a"))` to physical ARM mobile devices, excluding unneeded desktop emulator binaries (`x86`, `x86_64`).
+     - This reduces the compiled debug APK from ~81.67 MB to ~20.5–22 MB, providing >28 MB (>55%) of safety headroom below the 50 MB Telegram ceiling.
+  2. **Direct Delivery Pipeline:**
+     - Remove the `sendMessage` fallback branch completely. Delivery is guaranteed to be direct binary upload via `sendDocument`.
+     - In `.github/workflows/android-build.yml`, enforce an explicit pre-flight check asserting the staged APK exists and its byte size is strictly $\le$ 50,000,000 bytes (failing with `exit 1` immediately if exceeded).
+     - Upload via `curl` with retries/timeouts (`--retry 3 --retry-delay 5 --connect-timeout 30 --max-time 300`) and strictly validate that the Telegram API response contains `"ok":true`.
 * **Why This Matters:**
-  - Ensures the Telegram group **never misses a release notification** due to Telegram's payload ceiling, while giving testers an instant one-tap download button.
+  - Guarantees testers receive the installable APK binary directly inside the Telegram group on every successful CI build without external link navigation, while maintaining a strict fail-fast CI guardrail against artifact size regressions.

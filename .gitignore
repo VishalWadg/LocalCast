@@ -13,3 +13,5 @@
 *.aab
 *.ap_
 *.dex
+.agents/teamwork/
+TEST_READY.md

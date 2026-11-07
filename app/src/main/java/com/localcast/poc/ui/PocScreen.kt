@@ -1,21 +1,32 @@
 package com.localcast.poc.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -26,31 +37,50 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.localcast.poc.model.SessionPhase
 import com.localcast.poc.model.SessionRole
 import com.localcast.poc.model.SessionState
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import org.webrtc.SurfaceViewRenderer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/**
+ * Streamlined, user-friendly UI for LocalCast POC v0.1 (Requirement R3).
+ *
+ * Key features:
+ * - Segmented tab selector switching between "Host" and "Join" modes.
+ * - Prominent Host local IP display with one-tap clipboard copy and visual feedback.
+ * - Clean target IP and Port input fields with validation for Join mode.
+ * - Responsive 16:9 unobstructed video viewport for remote and local preview.
+ * - Floating circular media controls (Mic, Camera, Flip, End Session).
+ * - Expandable "Advanced Diagnostics" accordion at the bottom (collapsed by default),
+ *   preserving 100% of M0–M4 infrastructure telemetry and event logs without clutter.
+ */
 @Composable
 fun PocScreen(
     state: SessionState,
     onRequestPermissionsAndStartHost: () -> Unit,
-    onRequestPermissionsAndConnectClient: (hostIp: String, joinCode: String) -> Unit,
+    onRequestPermissionsAndConnectClient: (hostIp: String, targetPort: Int, joinCode: String) -> Unit,
     onInitWebRtc: () -> Unit,
     onBindWifi: () -> Unit,
     onApproveJoin: () -> Unit,
@@ -63,310 +93,864 @@ fun PocScreen(
     onBindLocalRenderer: (SurfaceViewRenderer) -> Unit,
     onUnbindLocalRenderer: (SurfaceViewRenderer) -> Unit,
     onBindRemoteRenderer: (SurfaceViewRenderer) -> Unit,
-    onUnbindRemoteRenderer: (SurfaceViewRenderer) -> Unit
+    onUnbindRemoteRenderer: (SurfaceViewRenderer) -> Unit,
+    viewModel: PocViewModel? = null
 ) {
-    var remoteIpInput by rememberSaveable { mutableStateOf("") }
-    var joinCodeInput by rememberSaveable { mutableStateOf("") }
+    val coroutineScope = rememberCoroutineScope()
+    val clipboardManager = LocalClipboardManager.current
+
+    // State binding: observe from ViewModel if supplied, else fallback to rememberSaveable
+    val vmUiState = viewModel?.uiState?.collectAsStateWithLifecycle()?.value
+    var localUiState by rememberSaveable(stateSaver = PocUiState.Saver) { mutableStateOf(PocUiState()) }
+    val uiState = vmUiState ?: localUiState
+
+    val onSelectMode: (UiMode) -> Unit = { mode ->
+        if (viewModel != null) viewModel.selectMode(mode)
+        else localUiState = localUiState.copy(selectedMode = mode, inputError = null)
+    }
+
+    val onIpChanged: (String) -> Unit = { ip ->
+        if (viewModel != null) viewModel.updateHostIp(ip)
+        else localUiState = localUiState.copy(hostIpInput = ip, inputError = null)
+    }
+
+    val onPortChanged: (String) -> Unit = { port ->
+        if (viewModel != null) viewModel.updateHostPort(port)
+        else localUiState = localUiState.copy(hostPortInput = port, inputError = null)
+    }
+
+    val onJoinCodeChanged: (String) -> Unit = { code ->
+        if (viewModel != null) viewModel.updateJoinCode(code)
+        else localUiState = localUiState.copy(joinCodeInput = code)
+    }
+
+    val onToggleDiagnostics: () -> Unit = {
+        if (viewModel != null) viewModel.toggleDiagnostics()
+        else localUiState = localUiState.copy(isDiagnosticsExpanded = !localUiState.isDiagnosticsExpanded)
+    }
+
+    val onCopyIp: (String) -> Unit = { ip ->
+        clipboardManager.setText(AnnotatedString(ip))
+        if (viewModel != null) {
+            viewModel.setIpCopied(true)
+            coroutineScope.launch {
+                delay(2000)
+                viewModel.setIpCopied(false)
+            }
+        } else {
+            localUiState = localUiState.copy(isIpCopied = true)
+            coroutineScope.launch {
+                delay(2000)
+                localUiState = localUiState.copy(isIpCopied = false)
+            }
+        }
+    }
+
     val scrollState = rememberScrollState()
 
     Surface(
         modifier = Modifier.fillMaxSize(),
-        color = Color(0xFFF6F8FB)
+        color = Color(0xFFF8FAFC)
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(scrollState)
                 .padding(horizontal = 16.dp, vertical = 20.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Header
+            // Header: App Title, Subtitle, and Connection Status Badge
+            HeaderSection(state = state)
+
+            // Optional Error Banner
+            if (!state.lastError.isNullOrBlank()) {
+                ErrorBanner(errorMessage = state.lastError)
+            }
+
+            // Dual Mode Setup vs. Active Streaming View
+            if (state.role == SessionRole.NONE) {
+                // Segmented Tab Selector: "Host" vs "Join"
+                SegmentedTabSelector(
+                    selectedMode = uiState.selectedMode,
+                    onModeSelected = onSelectMode
+                )
+
+                when (uiState.selectedMode) {
+                    UiMode.HOST -> {
+                        HostSetupCard(
+                            localIp = state.wifiStatus.localIpv4Address,
+                            isIpCopied = uiState.isIpCopied,
+                            onCopyIp = onCopyIp,
+                            onStartHosting = onRequestPermissionsAndStartHost
+                        )
+                    }
+                    UiMode.JOIN -> {
+                        JoinSetupCard(
+                            targetIp = uiState.hostIpInput,
+                            onTargetIpChanged = onIpChanged,
+                            targetPort = uiState.hostPortInput,
+                            onTargetPortChanged = onPortChanged,
+                            joinCode = uiState.joinCodeInput,
+                            onJoinCodeChanged = onJoinCodeChanged,
+                            inputError = uiState.inputError,
+                            onConnect = {
+                                val (ipValid, ipErr) = UiValidators.validateHostIp(uiState.hostIpInput)
+                                if (!ipValid) {
+                                    viewModel?.setInputError(ipErr) ?: run { localUiState = localUiState.copy(inputError = ipErr) }
+                                    return@JoinSetupCard
+                                }
+                                val (portValid, portErr) = UiValidators.validateSignalingPort(uiState.hostPortInput)
+                                if (!portValid) {
+                                    viewModel?.setInputError(portErr) ?: run { localUiState = localUiState.copy(inputError = portErr) }
+                                    return@JoinSetupCard
+                                }
+                                val (codeValid, codeErr) = UiValidators.validateJoinCode(uiState.joinCodeInput)
+                                if (!codeValid) {
+                                    viewModel?.setInputError(codeErr) ?: run { localUiState = localUiState.copy(inputError = codeErr) }
+                                    return@JoinSetupCard
+                                }
+                                viewModel?.clearInputError() ?: run { localUiState = localUiState.copy(inputError = null) }
+                                val parsedPort = uiState.hostPortInput.trim().toIntOrNull() ?: 8765
+                                onRequestPermissionsAndConnectClient(
+                                    uiState.hostIpInput.trim(),
+                                    parsedPort,
+                                    uiState.joinCodeInput.trim()
+                                )
+                            }
+                        )
+                    }
+                }
+            } else {
+                // Active Session Flow: Waiting, Approvals, or Live Streaming
+                if (state.role == SessionRole.HOST_PUBLISHER && state.phase != SessionPhase.CONNECTED) {
+                    HostWaitingBanner(
+                        localIp = state.wifiStatus.localIpv4Address,
+                        sessionCode = state.sessionCode,
+                        isIpCopied = uiState.isIpCopied,
+                        onCopyIp = onCopyIp
+                    )
+                }
+
+                // Incoming Participant Join Request Dialog / Card
+                val pending = state.pendingJoinRequest
+                if (pending != null) {
+                    PendingJoinApprovalCard(
+                        deviceName = pending.remoteDeviceName,
+                        deviceId = pending.remoteDeviceId,
+                        joinCode = pending.providedSessionCode,
+                        codeMatched = pending.codeMatched,
+                        onApprove = onApproveJoin,
+                        onReject = onRejectJoin
+                    )
+                }
+
+                // Active Stream Viewport & Media Controls
+                ActiveStreamView(
+                    state = state,
+                    onToggleMic = onToggleMic,
+                    onToggleCamera = onToggleCamera,
+                    onSwitchCamera = onSwitchCamera,
+                    onEndSession = onStopSession,
+                    onBindLocalRenderer = onBindLocalRenderer,
+                    onUnbindLocalRenderer = onUnbindLocalRenderer,
+                    onBindRemoteRenderer = onBindRemoteRenderer,
+                    onUnbindRemoteRenderer = onUnbindRemoteRenderer
+                )
+            }
+
+            // Advanced Diagnostics Accordion (Collapsed by Default)
+            DiagnosticsAccordion(
+                state = state,
+                isExpanded = uiState.isDiagnosticsExpanded,
+                onToggleExpand = onToggleDiagnostics,
+                onSendPing = onSendPing,
+                onInitWebRtc = onInitWebRtc,
+                onBindWifi = onBindWifi
+            )
+        }
+    }
+}
+
+/**
+ * Top application header displaying brand title and a status badge.
+ */
+@Composable
+private fun HeaderSection(state: SessionState) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column {
             Text(
                 text = "LocalCast",
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
-                color = Color(0xFF0D254C)
+                color = Color(0xFF0F172A)
             )
             Text(
-                text = "POC v0.1 (M0–M4) · Direct Wi-Fi WebRTC Camera/Mic + Foreground Service · SDK 37",
-                style = MaterialTheme.typography.bodySmall,
-                color = Color(0xFF4A607A)
+                text = "Direct Local Streaming",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFF64748B)
+            )
+        }
+
+        // Status Badge Pill
+        val (badgeBg, badgeText, badgeTextColor) = when (state.phase) {
+            SessionPhase.CONNECTED -> Triple(Color(0xFFDCFCE7), "● LIVE", Color(0xFF166534))
+            SessionPhase.WAITING_FOR_APPROVAL,
+            SessionPhase.CONNECTING_SIGNALING,
+            SessionPhase.NEGOTIATING -> Triple(Color(0xFFDBEAFE), "● Connecting", Color(0xFF1E40AF))
+            SessionPhase.FAILED -> Triple(Color(0xFFFEE2E2), "● Error", Color(0xFF991B1B))
+            else -> {
+                val ip = state.wifiStatus.localIpv4Address
+                if (ip != null) Triple(Color(0xFFF1F5F9), "● Ready", Color(0xFF334155))
+                else Triple(Color(0xFFF1F5F9), "● Offline", Color(0xFF64748B))
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .background(badgeBg, RoundedCornerShape(16.dp))
+                .padding(horizontal = 12.dp, vertical = 6.dp)
+        ) {
+            Text(
+                text = badgeText,
+                color = badgeTextColor,
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp
+            )
+        }
+    }
+}
+
+/**
+ * Visual error banner displayed when session errors occur.
+ */
+@Composable
+private fun ErrorBanner(errorMessage: String) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFFEF2F2)),
+        shape = RoundedCornerShape(10.dp),
+        border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(Color(0xFFFCA5A5)))
+    ) {
+        Text(
+            text = "Error: $errorMessage",
+            modifier = Modifier.padding(12.dp),
+            color = Color(0xFF991B1B),
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Medium
+        )
+    }
+}
+
+/**
+ * Segmented Tab Selector for "Host" vs "Join" modes.
+ */
+@Composable
+private fun SegmentedTabSelector(
+    selectedMode: UiMode,
+    onModeSelected: (UiMode) -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0xFFE2E8F0))
+            .padding(4.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            // Host Tab Button
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(if (selectedMode == UiMode.HOST) Color(0xFF0F172A) else Color.Transparent)
+                    .clickable { onModeSelected(UiMode.HOST) }
+                    .padding(vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "Host (Share Camera)",
+                    color = if (selectedMode == UiMode.HOST) Color.White else Color(0xFF475569),
+                    fontWeight = if (selectedMode == UiMode.HOST) FontWeight.Bold else FontWeight.Medium,
+                    fontSize = 13.sp
+                )
+            }
+
+            // Join Tab Button
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(if (selectedMode == UiMode.JOIN) Color(0xFF0F172A) else Color.Transparent)
+                    .clickable { onModeSelected(UiMode.JOIN) }
+                    .padding(vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "Join (Watch Stream)",
+                    color = if (selectedMode == UiMode.JOIN) Color.White else Color(0xFF475569),
+                    fontWeight = if (selectedMode == UiMode.JOIN) FontWeight.Bold else FontWeight.Medium,
+                    fontSize = 13.sp
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Host Mode Setup Card: Prominent Local IP, One-Tap Copy, and "Start Hosting" Action.
+ */
+@Composable
+private fun HostSetupCard(
+    localIp: String?,
+    isIpCopied: Boolean,
+    onCopyIp: (String) -> Unit,
+    onStartHosting: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Text(
+                text = "Host a Broadcast",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFF0F172A)
+            )
+            Text(
+                text = "Stream your camera and microphone to another device on the same local Wi-Fi without internet.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFF475569)
             )
 
-            // Status Banner Card
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = when (state.phase) {
-                        SessionPhase.CONNECTED -> Color(0xFFE6F4EA)
-                        SessionPhase.FAILED -> Color(0xFFFCE8E6)
-                        else -> Color(0xFFE8F0FE)
-                    }
-                ),
-                shape = RoundedCornerShape(12.dp)
+            // Prominent Local IP Section with One-Tap Copy
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFFF1F5F9), RoundedCornerShape(10.dp))
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                Column(modifier = Modifier.padding(14.dp)) {
+                Text(
+                    text = "Your Local Wi-Fi IP",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color(0xFF64748B)
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Text(
-                        text = "Phase: ${state.phase.name} · Role: ${state.role.name}",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color(0xFF0D254C)
+                        text = localIp ?: "Detecting IP...",
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF0F172A)
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = state.statusBanner,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color(0xFF1F3044)
-                    )
-                    if (!state.lastError.isNullOrBlank()) {
-                        Spacer(modifier = Modifier.height(4.dp))
+
+                    Button(
+                        onClick = { localIp?.let(onCopyIp) },
+                        enabled = localIp != null,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isIpCopied) Color(0xFF16A34A) else Color(0xFF0F172A),
+                            contentColor = Color.White
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
                         Text(
-                            text = "Error: ${state.lastError}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFFB3261E),
-                            fontWeight = FontWeight.Medium
+                            text = if (isIpCopied) "✓ Copied!" else "Copy IP",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
                         )
                     }
                 }
             }
 
-            // M3 Video Viewport Card (shown when Phone A is capturing or Phone B is connected/receiving)
-            if (state.mediaStatus.isCapturingLocal || state.role == SessionRole.CLIENT_RECEIVER) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        if (state.role == SessionRole.HOST_PUBLISHER) {
-                            Text(
-                                text = "Phone A — Local Camera Preview (${state.mediaStatus.captureProfile})",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White
-                            )
-                            WebRtcVideoRendererBox(
-                                isFrontMirror = state.mediaStatus.isFrontCamera,
-                                onBind = onBindLocalRenderer,
-                                onUnbind = onUnbindLocalRenderer,
-                                overlayLabel = if (state.mediaStatus.localCameraEnabled) {
-                                    "Publishing (${if (state.mediaStatus.isFrontCamera) "Front" else "Rear"})"
-                                } else {
-                                    "Camera Paused"
-                                }
-                            )
-                            // Publisher track controls
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Button(
-                                    onClick = onToggleMic,
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Text(if (state.mediaStatus.localMicEnabled) "Mute Mic" else "Unmute Mic")
-                                }
-                                Button(
-                                    onClick = onToggleCamera,
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Text(if (state.mediaStatus.localCameraEnabled) "Pause Cam" else "Resume Cam")
-                                }
-                                OutlinedButton(
-                                    onClick = onSwitchCamera,
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Text("Flip Cam")
-                                }
-                            }
-                        } else if (state.role == SessionRole.CLIENT_RECEIVER) {
-                            Text(
-                                text = "Phone B — Incoming Remote Video & Audio",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White
-                            )
-                            WebRtcVideoRendererBox(
-                                isFrontMirror = false,
-                                onBind = onBindRemoteRenderer,
-                                onUnbind = onUnbindRemoteRenderer,
-                                overlayLabel = when {
-                                    !state.mediaStatus.remoteVideoAvailable -> "Waiting for remote video track..."
-                                    !state.mediaStatus.remoteCameraEnabled -> "Host paused camera"
-                                    else -> "LIVE · Host Mic: ${if (state.mediaStatus.remoteMicEnabled) "ON" else "MUTED"}"
-                                }
-                            )
-                        }
-                    }
-                }
+            // Primary Action Button
+            Button(
+                onClick = onStartHosting,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A))
+            ) {
+                Text(
+                    text = "Start Hosting & Stream",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Join Mode Setup Card: Clean Target IP & Port Input Fields with Validation.
+ */
+@Composable
+private fun JoinSetupCard(
+    targetIp: String,
+    onTargetIpChanged: (String) -> Unit,
+    targetPort: String,
+    onTargetPortChanged: (String) -> Unit,
+    joinCode: String,
+    onJoinCodeChanged: (String) -> Unit,
+    inputError: String?,
+    onConnect: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Text(
+                text = "Connect to Host",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFF0F172A)
+            )
+            Text(
+                text = "Enter Phone A's Wi-Fi IP address shown on the Host screen to receive the live stream.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color(0xFF475569)
+            )
+
+            // Target IP Field
+            OutlinedTextField(
+                value = targetIp,
+                onValueChange = onTargetIpChanged,
+                label = { Text("Host IP Address (e.g. 192.168.1.10)") },
+                placeholder = { Text("192.168.1.10") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            // Target Port & Optional Join Code Row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedTextField(
+                    value = targetPort,
+                    onValueChange = onTargetPortChanged,
+                    label = { Text("Port") },
+                    placeholder = { Text("8765") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.weight(1f)
+                )
+
+                OutlinedTextField(
+                    value = joinCode,
+                    onValueChange = onJoinCodeChanged,
+                    label = { Text("Join Code (Optional)") },
+                    placeholder = { Text("6 digits") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.weight(1.4f)
+                )
             }
 
-            // M1 + M2 + M3 + M4 Session Controls Card
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = Color.White),
-                shape = RoundedCornerShape(12.dp)
+            // Validation Error Display
+            if (inputError != null) {
+                Text(
+                    text = "⚠ $inputError",
+                    color = Color(0xFFDC2626),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+
+            // Primary Action Button
+            Button(
+                onClick = onConnect,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0F172A))
             ) {
+                Text(
+                    text = "Connect to Host",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Host Waiting Banner: Shown on Phone A while waiting for a receiver to connect.
+ */
+@Composable
+private fun HostWaitingBanner(
+    localIp: String?,
+    sessionCode: String,
+    isIpCopied: Boolean,
+    onCopyIp: (String) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFEFF6FF)),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(
+                text = "Waiting for Receiver to Connect",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFF1E3A8A)
+            )
+            Text(
+                text = "Enter this IP on Phone B:",
+                fontSize = 12.sp,
+                color = Color(0xFF3B82F6)
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = localIp ?: "unknown",
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF0F172A)
+                )
+
+                Button(
+                    onClick = { localIp?.let(onCopyIp) },
+                    enabled = localIp != null,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isIpCopied) Color(0xFF16A34A) else Color(0xFF1E40AF),
+                        contentColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        text = if (isIpCopied) "✓ Copied!" else "Copy IP",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+            if (sessionCode.isNotBlank()) {
+                Text(
+                    text = "Join Code: $sessionCode",
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                    color = Color(0xFF475569)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Approval Card for Incoming Join Requests on Phone A.
+ */
+@Composable
+private fun PendingJoinApprovalCard(
+    deviceName: String,
+    deviceId: String,
+    joinCode: String,
+    codeMatched: Boolean,
+    onApprove: () -> Unit,
+    onReject: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFFBEB)),
+        shape = RoundedCornerShape(12.dp),
+        border = CardDefaults.outlinedCardBorder().copy(brush = androidx.compose.ui.graphics.SolidColor(Color(0xFFFDE68A)))
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = "Incoming Connection Request",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFF92400E)
+            )
+            Text(
+                text = "Device: $deviceName ($deviceId)",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF78350F)
+            )
+            Text(
+                text = "Join Code: $joinCode ${if (codeMatched) "✓ (Matched)" else "⚠ (Mismatch)"}",
+                fontFamily = FontFamily.Monospace,
+                fontSize = 12.sp,
+                color = if (codeMatched) Color(0xFF166534) else Color(0xFFB45309)
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Button(
+                    onClick = onApprove,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("Approve & Stream")
+                }
+                OutlinedButton(
+                    onClick = onReject,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("Reject")
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Active Stream View: Responsive 16:9 Video Viewport with Floating Circular Action Buttons.
+ */
+@Composable
+private fun ActiveStreamView(
+    state: SessionState,
+    onToggleMic: () -> Unit,
+    onToggleCamera: () -> Unit,
+    onSwitchCamera: () -> Unit,
+    onEndSession: () -> Unit,
+    onBindLocalRenderer: (SurfaceViewRenderer) -> Unit,
+    onUnbindLocalRenderer: (SurfaceViewRenderer) -> Unit,
+    onBindRemoteRenderer: (SurfaceViewRenderer) -> Unit,
+    onUnbindRemoteRenderer: (SurfaceViewRenderer) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            // Unobstructed Responsive 16:9 Video Viewport
+            if (state.role == SessionRole.HOST_PUBLISHER) {
+                WebRtcVideoRendererBox(
+                    isFrontMirror = state.mediaStatus.isFrontCamera,
+                    onBind = onBindLocalRenderer,
+                    onUnbind = onUnbindLocalRenderer,
+                    overlayLabel = if (state.mediaStatus.localCameraEnabled) {
+                        "Publishing (${if (state.mediaStatus.isFrontCamera) "Front" else "Rear"})"
+                    } else {
+                        "Camera Paused"
+                    }
+                )
+            } else if (state.role == SessionRole.CLIENT_RECEIVER) {
+                WebRtcVideoRendererBox(
+                    isFrontMirror = false,
+                    onBind = onBindRemoteRenderer,
+                    onUnbind = onUnbindRemoteRenderer,
+                    overlayLabel = when {
+                        !state.mediaStatus.remoteVideoAvailable -> "Waiting for remote video track..."
+                        !state.mediaStatus.remoteCameraEnabled -> "Host paused camera"
+                        else -> "LIVE · Host Mic: ${if (state.mediaStatus.remoteMicEnabled) "ON" else "MUTED"}"
+                    }
+                )
+            }
+
+            // Floating Circular Controls Bar
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Mic Mute Toggle
+                val isMicOn = state.mediaStatus.localMicEnabled
+                CircularActionButton(
+                    iconText = if (isMicOn) "MIC" else "MUTED",
+                    labelText = if (isMicOn) "Mute" else "Unmute",
+                    isActive = isMicOn,
+                    activeContainerColor = Color(0xFF334155),
+                    inactiveContainerColor = Color(0xFFDC2626),
+                    onClick = onToggleMic
+                )
+
+                // Camera Pause Toggle
+                val isCamOn = state.mediaStatus.localCameraEnabled
+                CircularActionButton(
+                    iconText = if (isCamOn) "CAM" else "PAUSED",
+                    labelText = if (isCamOn) "Pause" else "Resume",
+                    isActive = isCamOn,
+                    activeContainerColor = Color(0xFF334155),
+                    inactiveContainerColor = Color(0xFFD97706),
+                    onClick = onToggleCamera
+                )
+
+                // Flip Camera (Host Only)
+                CircularActionButton(
+                    iconText = "FLIP",
+                    labelText = if (state.mediaStatus.isFrontCamera) "Rear" else "Front",
+                    isActive = true,
+                    activeContainerColor = Color(0xFF334155),
+                    inactiveContainerColor = Color(0xFF334155),
+                    enabled = state.role == SessionRole.HOST_PUBLISHER,
+                    onClick = onSwitchCamera
+                )
+
+                // End Session Disconnect Button (Prominently Styled)
+                CircularActionButton(
+                    iconText = "END",
+                    labelText = "Disconnect",
+                    isActive = false,
+                    activeContainerColor = Color(0xFFDC2626),
+                    inactiveContainerColor = Color(0xFFDC2626),
+                    contentColor = Color.White,
+                    onClick = onEndSession
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Circular Action Button with icon indicator and sub-label for active calls.
+ */
+@Composable
+private fun CircularActionButton(
+    iconText: String,
+    labelText: String,
+    isActive: Boolean,
+    activeContainerColor: Color,
+    inactiveContainerColor: Color,
+    contentColor: Color = Color.White,
+    enabled: Boolean = true,
+    onClick: () -> Unit
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(54.dp)
+                .clip(CircleShape)
+                .background(if (isActive) activeContainerColor else inactiveContainerColor)
+                .clickable(enabled = enabled, onClick = onClick),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = iconText,
+                color = if (enabled) contentColor else Color(0xFF64748B),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace
+            )
+        }
+        Text(
+            text = labelText,
+            color = if (enabled) Color(0xFFCBD5E1) else Color(0xFF64748B),
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Medium
+        )
+    }
+}
+
+/**
+ * Advanced Diagnostics Accordion: Collapsed by default at screen bottom,
+ * preserving 100% of M0–M4 infrastructure telemetry, debug buttons, and raw event log.
+ */
+@Composable
+private fun DiagnosticsAccordion(
+    state: SessionState,
+    isExpanded: Boolean,
+    onToggleExpand: () -> Unit,
+    onSendPing: () -> Unit,
+    onInitWebRtc: () -> Unit,
+    onBindWifi: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .animateContentSize(),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        shape = RoundedCornerShape(14.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            // Expandable Accordion Header
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onToggleExpand)
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "Advanced Diagnostics (M0–M4)",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF0D254C)
+                    )
+                    Text(
+                        text = "Low-level WebRTC, network telemetry, and log events",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF64748B),
+                        fontSize = 11.sp
+                    )
+                }
+
+                Text(
+                    text = if (isExpanded) "▲ Collapse" else "▼ Expand",
+                    color = Color(0xFF2563EB),
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            AnimatedVisibility(visible = isExpanded) {
                 Column(
-                    modifier = Modifier.padding(14.dp),
+                    modifier = Modifier.padding(top = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Text(
-                        text = "Session Controls (Phone A Host / Phone B Receiver)",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF0D254C)
-                    )
+                    HorizontalDivider(color = Color(0xFFE2E8F0))
 
-                    // Phone A: Start Sharing / Hosting button
-                    Button(
-                        onClick = onRequestPermissionsAndStartHost,
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = state.role == SessionRole.NONE
-                    ) {
-                        Text("Start Hosting & Share Camera/Mic (Phone A)")
-                    }
-
-                    if (state.role == SessionRole.HOST_PUBLISHER && state.hostEndpointUrl != null) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(Color(0xFFF1F5F9), RoundedCornerShape(8.dp))
-                                .padding(10.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Text(
-                                text = "Enter this IP on Phone B: ${state.wifiStatus.localIpv4Address ?: "unknown"}",
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFF0D254C)
-                            )
-                            Text(
-                                text = "Endpoint: ${state.hostEndpointUrl} · Join Code: ${state.sessionCode}",
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 12.sp,
-                                color = Color(0xFF334155)
-                            )
-                            Text(
-                                text = "M4 Foreground Service: ${if (state.foregroundServiceStatus.isRunning) "ACTIVE (${state.foregroundServiceStatus.activeServiceTypes})" else "Starting..."}",
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 11.sp,
-                                color = Color(0xFF137333)
-                            )
-                        }
-                    }
-
-                    // Pending Join Approval Card on Phone A
-                    val pending = state.pendingJoinRequest
-                    if (pending != null) {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFFFFF8E1)),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(12.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Text(
-                                    text = "Incoming Join Request: ${pending.remoteDeviceName}",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    text = "Device ID: ${pending.remoteDeviceId} · Code: ${pending.providedSessionCode}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Button(
-                                        onClick = onApproveJoin,
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Text("Approve & Stream")
-                                    }
-                                    OutlinedButton(
-                                        onClick = onRejectJoin,
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Text("Reject")
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Phone B: Connect to Host controls
-                    if (state.role == SessionRole.NONE) {
-                        OutlinedTextField(
-                            value = remoteIpInput,
-                            onValueChange = { remoteIpInput = it },
-                            label = { Text("Phone A Wi-Fi IP Address (e.g. 192.168.1.10)") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        OutlinedTextField(
-                            value = joinCodeInput,
-                            onValueChange = { joinCodeInput = it },
-                            label = { Text("Optional 6-Digit Join Code") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Button(
-                            onClick = { onRequestPermissionsAndConnectClient(remoteIpInput, joinCodeInput) },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("Connect to Host (Phone B)")
-                        }
-                    }
-
-                    // Active session actions (PING / Stop Session)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Button(
-                            onClick = onSendPing,
-                            modifier = Modifier.weight(1f),
-                            enabled = state.role != SessionRole.NONE
-                        ) {
-                            Text("Send PING")
-                        }
-                        OutlinedButton(
-                            onClick = onStopSession,
-                            modifier = Modifier.weight(1f),
-                            enabled = state.role != SessionRole.NONE
-                        ) {
-                            Text("Stop Session")
-                        }
-                    }
-                }
-            }
-
-            // M0 + M1 + M2 + M4 Telemetry Summary Card
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = Color.White),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Text(
-                        text = "M0–M4 Infrastructure Telemetry",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF0D254C)
-                    )
+                    // M0–M4 Telemetry Rows
                     val engine = state.mediaEngineStatus
                     Text(
                         text = "M0 WebRTC: ${if (engine.initialized) "OK (${engine.primaryAbi}, LocalICE=${engine.localOnlyIceConfigured})" else "Uninitialized"}",
@@ -403,51 +987,60 @@ fun PocScreen(
                         fontFamily = FontFamily.Monospace,
                         fontSize = 11.sp
                     )
+
+                    // Diagnostic Actions Row
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         OutlinedButton(
+                            onClick = onSendPing,
+                            modifier = Modifier.weight(1f),
+                            enabled = state.role != SessionRole.NONE
+                        ) {
+                            Text("Send PING", fontSize = 11.sp)
+                        }
+                        OutlinedButton(
                             onClick = onInitWebRtc,
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text("Re-check M0")
+                            Text("Re-check M0", fontSize = 11.sp)
                         }
                         OutlinedButton(
                             onClick = onBindWifi,
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text("Bind Wi-Fi (M1)")
+                            Text("Bind Wi-Fi", fontSize = 11.sp)
                         }
                     }
-                }
-            }
 
-            // Diagnostic Log Card
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Text(
-                        text = "Diagnostic Event Log (${state.diagnosticLogs.size})",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFFE2E8F0)
-                    )
-                    val timeFmt = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
-                    for (entry in state.diagnosticLogs.take(25)) {
-                        val ts = timeFmt.format(Date(entry.timestampMs))
-                        Text(
-                            text = "$ts [${entry.tag}] ${entry.message}",
-                            color = Color(0xFFCBD5E1),
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 11.sp
-                        )
+                    // Diagnostic Event Log (Last 25 Entries)
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F172A)),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                text = "Diagnostic Event Log (${state.diagnosticLogs.size})",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFE2E8F0)
+                            )
+                            val timeFmt = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+                            for (entry in state.diagnosticLogs.take(25)) {
+                                val ts = timeFmt.format(Date(entry.timestampMs))
+                                Text(
+                                    text = "$ts [${entry.tag}] ${entry.message}",
+                                    color = Color(0xFFCBD5E1),
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 11.sp
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -456,19 +1049,24 @@ fun PocScreen(
 }
 
 /**
- * M3: Hosts WebRTC's `SurfaceViewRenderer` inside Jetpack Compose `AndroidView` (Spec Section 7),
- * safely releasing the renderer when removed from composition.
+ * Hosts WebRTC's `SurfaceViewRenderer` inside Jetpack Compose `AndroidView`,
+ * maintaining 16:9 aspect ratio and safely releasing the renderer on dispose.
  */
 @Composable
 private fun WebRtcVideoRendererBox(
     isFrontMirror: Boolean,
     onBind: (SurfaceViewRenderer) -> Unit,
     onUnbind: (SurfaceViewRenderer) -> Unit,
-    overlayLabel: String
+    overlayLabel: String,
+    modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val renderer = remember {
-        SurfaceViewRenderer(context)
+        SurfaceViewRenderer(context).apply {
+            runCatching {
+                setZOrderMediaOverlay(true)
+            }
+        }
     }
 
     DisposableEffect(renderer) {
@@ -485,10 +1083,10 @@ private fun WebRtcVideoRendererBox(
     }
 
     Box(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
-            .height(260.dp)
-            .clip(RoundedCornerShape(10.dp))
+            .aspectRatio(16f / 9f)
+            .clip(RoundedCornerShape(12.dp))
             .background(Color.Black)
     ) {
         AndroidView(
