@@ -16,9 +16,9 @@ import java.net.Inet4Address
  */
 class WifiNetworkController(context: Context) {
 
-    private val appContext = context.applicationContext
-    private val connectivityManager =
-        appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    private val appContext = context.applicationContext ?: context
+    private val connectivityManager: ConnectivityManager? =
+        appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
 
     @Volatile
     private var boundNetwork: Network? = null
@@ -26,12 +26,24 @@ class WifiNetworkController(context: Context) {
     @Volatile
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
+    @Volatile
+    private var discoveryWifiCallback: ConnectivityManager.NetworkCallback? = null
+
     /**
      * Locates an active Wi-Fi network, extracts its site-local IPv4 address, and binds
      * the current process to that Wi-Fi network.
      */
     @Synchronized
     fun bindToWifiNetwork(onWifiLost: (() -> Unit)? = null): WifiBindingStatus {
+        val cm = connectivityManager
+            ?: return WifiBindingStatus(
+                isBoundToWifi = false,
+                localIpv4Address = null,
+                interfaceName = null,
+                networkHandle = null,
+                statusMessage = "Connectivity service unavailable."
+            )
+
         val wifiNetwork = findWifiNetwork()
             ?: return WifiBindingStatus(
                 isBoundToWifi = false,
@@ -41,7 +53,7 @@ class WifiNetworkController(context: Context) {
                 statusMessage = "No active Wi-Fi network found. Connect both phones to the same Wi-Fi LAN."
             )
 
-        val linkProperties = connectivityManager.getLinkProperties(wifiNetwork)
+        val linkProperties = cm.getLinkProperties(wifiNetwork)
         val ipv4 = extractSiteLocalIpv4(linkProperties)
         val iface = linkProperties?.interfaceName
 
@@ -55,7 +67,7 @@ class WifiNetworkController(context: Context) {
             )
         }
 
-        val bound = connectivityManager.bindProcessToNetwork(wifiNetwork)
+        val bound = cm.bindProcessToNetwork(wifiNetwork)
         if (!bound) {
             return WifiBindingStatus(
                 isBoundToWifi = false,
@@ -79,6 +91,13 @@ class WifiNetworkController(context: Context) {
     }
 
     /**
+     * Returns the bound Wi-Fi [Network] if active, or locates an available Wi-Fi [Network]
+     * for scoping mDNS discovery/advertisement to the local Wi-Fi interface.
+     */
+    @Synchronized
+    fun activeWifiNetwork(): Network? = boundNetwork ?: findWifiNetwork()
+
+    /**
      * Restores default process network routing and unregisters any network callback.
      * Safe and idempotent when called multiple times.
      */
@@ -87,7 +106,7 @@ class WifiNetworkController(context: Context) {
         unregisterDisconnectMonitor()
         boundNetwork = null
         runCatching {
-            connectivityManager.bindProcessToNetwork(null)
+            connectivityManager?.bindProcessToNetwork(null)
         }
         return WifiBindingStatus(
             isBoundToWifi = false,
@@ -102,9 +121,18 @@ class WifiNetworkController(context: Context) {
      * Inspects current Wi-Fi status without mutating process socket binding.
      */
     fun inspectCurrentWifiStatus(): WifiBindingStatus {
+        val cm = connectivityManager
+            ?: return WifiBindingStatus(
+                isBoundToWifi = false,
+                localIpv4Address = null,
+                interfaceName = null,
+                networkHandle = null,
+                statusMessage = "Wi-Fi unavailable — connect to a local Wi-Fi network"
+            )
+
         val currentBound = boundNetwork
         if (currentBound != null) {
-            val props = connectivityManager.getLinkProperties(currentBound)
+            val props = cm.getLinkProperties(currentBound)
             val ip = extractSiteLocalIpv4(props)
             if (ip != null) {
                 return WifiBindingStatus(
@@ -118,7 +146,7 @@ class WifiNetworkController(context: Context) {
         }
 
         val candidate = findWifiNetwork()
-        val props = candidate?.let { connectivityManager.getLinkProperties(it) }
+        val props = candidate?.let { cm.getLinkProperties(it) }
         val ip = extractSiteLocalIpv4(props)
         return if (candidate != null && ip != null) {
             WifiBindingStatus(
@@ -141,11 +169,12 @@ class WifiNetworkController(context: Context) {
 
     @Suppress("DEPRECATION")
     private fun findWifiNetwork(): Network? {
-        val active = connectivityManager.activeNetwork
+        val cm = connectivityManager ?: return null
+        val active = cm.activeNetwork
         if (active != null && isWifiTransport(active)) {
             return active
         }
-        for (network in connectivityManager.allNetworks) {
+        for (network in cm.allNetworks) {
             if (isWifiTransport(network)) {
                 return network
             }
@@ -154,7 +183,7 @@ class WifiNetworkController(context: Context) {
     }
 
     private fun isWifiTransport(network: Network): Boolean {
-        val caps = connectivityManager.getNetworkCapabilities(network) ?: return false
+        val caps = connectivityManager?.getNetworkCapabilities(network) ?: return false
         return caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
     }
 
@@ -168,6 +197,7 @@ class WifiNetworkController(context: Context) {
 
     private fun registerDisconnectMonitor(targetNetwork: Network, onWifiLost: (() -> Unit)?) {
         unregisterDisconnectMonitor()
+        val cm = connectivityManager ?: return
         if (onWifiLost == null) return
         val request = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
@@ -180,16 +210,69 @@ class WifiNetworkController(context: Context) {
             }
         }
         runCatching {
-            connectivityManager.registerNetworkCallback(request, callback)
+            cm.registerNetworkCallback(request, callback)
             networkCallback = callback
         }
     }
+
+    /**
+     * Registers a passive Wi-Fi callback (without process network binding) so Join-mode
+     * auto-discovery reacts immediately when Wi-Fi disconnects or reconnects.
+     */
+    @Synchronized
+    @Suppress("DEPRECATION")
+    fun startWifiMonitor(
+        onWifiAvailable: () -> Unit,
+        onWifiLost: () -> Unit
+    ) {
+        stopWifiMonitor()
+        val cm = connectivityManager ?: return
+        val request = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .build()
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                onWifiAvailable()
+            }
+
+            override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
+                if (extractSiteLocalIpv4(linkProperties) != null) {
+                    onWifiAvailable()
+                }
+            }
+
+            override fun onLost(network: Network) {
+                val anotherWifiExists = runCatching {
+                    cm.allNetworks.any { it != network && isWifiTransport(it) }
+                }.getOrDefault(false)
+                if (!anotherWifiExists) {
+                    onWifiLost()
+                }
+            }
+        }
+        runCatching {
+            cm.registerNetworkCallback(request, callback)
+            discoveryWifiCallback = callback
+        }
+    }
+
+    @Synchronized
+    fun stopWifiMonitor() {
+        val existing = discoveryWifiCallback ?: return
+        discoveryWifiCallback = null
+        runCatching {
+            connectivityManager?.unregisterNetworkCallback(existing)
+        }
+    }
+
+    @Synchronized
+    fun isWifiMonitorActive(): Boolean = discoveryWifiCallback != null
 
     private fun unregisterDisconnectMonitor() {
         val existing = networkCallback ?: return
         networkCallback = null
         runCatching {
-            connectivityManager.unregisterNetworkCallback(existing)
+            connectivityManager?.unregisterNetworkCallback(existing)
         }
     }
 }

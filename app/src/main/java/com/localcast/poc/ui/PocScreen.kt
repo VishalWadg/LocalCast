@@ -1,5 +1,6 @@
 package com.localcast.poc.ui
 
+import android.app.Activity
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.background
@@ -26,14 +27,17 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -50,10 +54,14 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.localcast.poc.model.DiscoveredHost
+import com.localcast.poc.model.DiscoveryState
+import com.localcast.poc.model.DiscoveryStatus
 import com.localcast.poc.model.SessionPhase
 import com.localcast.poc.model.SessionRole
 import com.localcast.poc.model.SessionState
@@ -65,16 +73,17 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Streamlined, user-friendly UI for LocalCast POC v0.1 (Requirement R3).
+ * Streamlined, user-friendly UI for LocalCast POC v0.1 (Milestones M0–M5).
  *
  * Key features:
  * - Segmented tab selector switching between "Host" and "Join" modes.
- * - Prominent Host local IP display with one-tap clipboard copy and visual feedback.
- * - Clean target IP and Port input fields with validation for Join mode.
+ * - Prominent Host local IP display with one-tap clipboard copy and mDNS advertisement badge.
+ * - ZeroConf / mDNS auto-discovery host list in Join mode with one-tap IP/port population
+ *   plus manual IPv4 and port fallback fields.
  * - Responsive 16:9 unobstructed video viewport for remote and local preview.
  * - Floating circular media controls (Mic, Camera, Flip, End Session).
  * - Expandable "Advanced Diagnostics" accordion at the bottom (collapsed by default),
- *   preserving 100% of M0–M4 infrastructure telemetry and event logs without clutter.
+ *   preserving 100% of M0–M5 infrastructure telemetry and event logs without clutter.
  */
 @Composable
 fun PocScreen(
@@ -94,15 +103,47 @@ fun PocScreen(
     onUnbindLocalRenderer: (SurfaceViewRenderer) -> Unit,
     onBindRemoteRenderer: (SurfaceViewRenderer) -> Unit,
     onUnbindRemoteRenderer: (SurfaceViewRenderer) -> Unit,
+    onRequestDiscoveryPermissions: () -> Unit = {},
+    onStartDiscovery: () -> Unit = {},
+    onStopDiscovery: () -> Unit = {},
+    onRefreshDiscovery: () -> Unit = {},
     viewModel: PocViewModel? = null
 ) {
     val coroutineScope = rememberCoroutineScope()
     val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
 
     // State binding: observe from ViewModel if supplied, else fallback to rememberSaveable
     val vmUiState = viewModel?.uiState?.collectAsStateWithLifecycle()?.value
     var localUiState by rememberSaveable(stateSaver = PocUiState.Saver) { mutableStateOf(PocUiState()) }
     val uiState = vmUiState ?: localUiState
+    var hasPromptedDiscoveryPermission by rememberSaveable { mutableStateOf(false) }
+
+    val shouldDiscover = state.role == SessionRole.NONE && uiState.selectedMode == UiMode.JOIN
+    LaunchedEffect(shouldDiscover, state.permissions.localNetworkGranted) {
+        if (shouldDiscover) {
+            if (state.permissions.localNetworkGranted) {
+                onStartDiscovery()
+            } else if (!hasPromptedDiscoveryPermission) {
+                hasPromptedDiscoveryPermission = true
+                onRequestDiscoveryPermissions()
+            } else {
+                // Ensure UI surfaces PERMISSION_REQUIRED cleanly without re-prompting in a loop
+                onStartDiscovery()
+            }
+        } else if (state.discoveryState.isBrowsing || state.discoveryState.status != DiscoveryStatus.IDLE) {
+            onStopDiscovery()
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            val isConfigChange = (context as? Activity)?.isChangingConfigurations == true
+            if (!isConfigChange) {
+                onStopDiscovery()
+            }
+        }
+    }
 
     val onSelectMode: (UiMode) -> Unit = { mode ->
         if (viewModel != null) viewModel.selectMode(mode)
@@ -122,6 +163,18 @@ fun PocScreen(
     val onJoinCodeChanged: (String) -> Unit = { code ->
         if (viewModel != null) viewModel.updateJoinCode(code)
         else localUiState = localUiState.copy(joinCodeInput = code)
+    }
+
+    val onSelectDiscoveredHost: (DiscoveredHost) -> Unit = { host ->
+        if (viewModel != null) {
+            viewModel.selectDiscoveredHost(host)
+        } else {
+            localUiState = localUiState.copy(
+                hostIpInput = host.hostAddress,
+                hostPortInput = host.port.toString(),
+                inputError = null
+            )
+        }
     }
 
     val onToggleDiagnostics: () -> Unit = {
@@ -186,6 +239,10 @@ fun PocScreen(
                     }
                     UiMode.JOIN -> {
                         JoinSetupCard(
+                            discoveryState = state.discoveryState,
+                            onSelectDiscoveredHost = onSelectDiscoveredHost,
+                            onRequestDiscoveryPermissions = onRequestDiscoveryPermissions,
+                            onRefreshDiscovery = onRefreshDiscovery,
                             targetIp = uiState.hostIpInput,
                             onTargetIpChanged = onIpChanged,
                             targetPort = uiState.hostPortInput,
@@ -227,6 +284,8 @@ fun PocScreen(
                         localIp = state.wifiStatus.localIpv4Address,
                         sessionCode = state.sessionCode,
                         isIpCopied = uiState.isIpCopied,
+                        isAdvertising = state.discoveryState.isAdvertising,
+                        advertisedServiceName = state.discoveryState.advertisedServiceName,
                         onCopyIp = onCopyIp
                     )
                 }
@@ -501,10 +560,14 @@ private fun HostSetupCard(
 }
 
 /**
- * Join Mode Setup Card: Clean Target IP & Port Input Fields with Validation.
+ * Join Mode Setup Card: M5 Auto-Discovery Host List + Manual Target IP & Port Fallback.
  */
 @Composable
 private fun JoinSetupCard(
+    discoveryState: DiscoveryState,
+    onSelectDiscoveredHost: (DiscoveredHost) -> Unit,
+    onRequestDiscoveryPermissions: () -> Unit,
+    onRefreshDiscovery: () -> Unit,
     targetIp: String,
     onTargetIpChanged: (String) -> Unit,
     targetPort: String,
@@ -531,10 +594,41 @@ private fun JoinSetupCard(
                 color = Color(0xFF0F172A)
             )
             Text(
-                text = "Enter Phone A's Wi-Fi IP address shown on the Host screen to receive the live stream.",
+                text = "Tap a nearby LocalCast host discovered on your Wi-Fi, or enter Phone A's IP address manually.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = Color(0xFF475569)
             )
+
+            // M5: Auto-Discovery Nearby Hosts Panel
+            NearbyHostsDiscoverySection(
+                discoveryState = discoveryState,
+                selectedIp = targetIp,
+                selectedPort = targetPort,
+                onSelectHost = onSelectDiscoveredHost,
+                onRequestPermission = onRequestDiscoveryPermissions,
+                onRefresh = onRefreshDiscovery
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                HorizontalDivider(
+                    modifier = Modifier.weight(1f),
+                    color = Color(0xFFE2E8F0)
+                )
+                Text(
+                    text = "Or enter IP manually",
+                    fontSize = 11.sp,
+                    color = Color(0xFF64748B),
+                    fontWeight = FontWeight.Medium
+                )
+                HorizontalDivider(
+                    modifier = Modifier.weight(1f),
+                    color = Color(0xFFE2E8F0)
+                )
+            }
 
             // Target IP Field
             OutlinedTextField(
@@ -606,6 +700,214 @@ private fun JoinSetupCard(
 }
 
 /**
+ * M5: Displays nearby `_localcast._tcp` hosts, discovery status, permission prompt, and manual fallback cue.
+ */
+@Composable
+private fun NearbyHostsDiscoverySection(
+    discoveryState: DiscoveryState,
+    selectedIp: String,
+    selectedPort: String,
+    onSelectHost: (DiscoveredHost) -> Unit,
+    onRequestPermission: () -> Unit,
+    onRefresh: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFFF8FAFC), RoundedCornerShape(12.dp))
+            .border(1.dp, Color(0xFFE2E8F0), RoundedCornerShape(12.dp))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "Nearby Hosts",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFF0F172A)
+                )
+                val (pillBg, pillText, pillFg) = when (discoveryState.status) {
+                    DiscoveryStatus.SCANNING -> {
+                        if (discoveryState.discoveredHosts.isEmpty()) {
+                            Triple(Color(0xFFDBEAFE), "Scanning", Color(0xFF1E40AF))
+                        } else {
+                            Triple(Color(0xFFDCFCE7), "${discoveryState.discoveredHosts.size} found", Color(0xFF166534))
+                        }
+                    }
+                    DiscoveryStatus.PERMISSION_REQUIRED -> Triple(Color(0xFFFEF3C7), "Permission", Color(0xFF92400E))
+                    DiscoveryStatus.WIFI_UNAVAILABLE -> Triple(Color(0xFFF1F5F9), "No Wi-Fi", Color(0xFF475569))
+                    DiscoveryStatus.ERROR -> Triple(Color(0xFFFEE2E2), "Error", Color(0xFF991B1B))
+                    DiscoveryStatus.IDLE -> Triple(Color(0xFFF1F5F9), "Idle", Color(0xFF64748B))
+                }
+                Box(
+                    modifier = Modifier
+                        .background(pillBg, RoundedCornerShape(10.dp))
+                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = pillText,
+                        color = pillFg,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+
+            if (discoveryState.status != DiscoveryStatus.PERMISSION_REQUIRED) {
+                TextButton(
+                    onClick = onRefresh,
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = "Refresh",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFF2563EB)
+                    )
+                }
+            }
+        }
+
+        when (discoveryState.status) {
+            DiscoveryStatus.PERMISSION_REQUIRED -> {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Allow Local Network access (or enable it in App Settings if previously denied) to auto-discover nearby hosts on Wi-Fi, or enter the host IP manually below.",
+                        fontSize = 12.sp,
+                        color = Color(0xFF475569)
+                    )
+                    Button(
+                        onClick = onRequestPermission,
+                        shape = RoundedCornerShape(8.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E40AF)),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+                    ) {
+                        Text(
+                            text = "Allow Local Network Discovery",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+            }
+            DiscoveryStatus.WIFI_UNAVAILABLE -> {
+                Text(
+                    text = "Connect both devices to the same Wi-Fi network to auto-discover hosts.",
+                    fontSize = 12.sp,
+                    color = Color(0xFF475569)
+                )
+            }
+            DiscoveryStatus.ERROR -> {
+                Text(
+                    text = discoveryState.lastError ?: discoveryState.statusMessage,
+                    fontSize = 12.sp,
+                    color = Color(0xFFB91C1C)
+                )
+            }
+            DiscoveryStatus.SCANNING, DiscoveryStatus.IDLE -> {
+                if (discoveryState.discoveredHosts.isEmpty()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        if (discoveryState.isBrowsing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = Color(0xFF2563EB)
+                            )
+                        }
+                        Text(
+                            text = if (discoveryState.isBrowsing) {
+                                "Listening on local Wi-Fi… Start hosting on Phone A to appear here."
+                            } else {
+                                discoveryState.statusMessage
+                            },
+                            fontSize = 12.sp,
+                            color = Color(0xFF475569)
+                        )
+                    }
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        for (host in discoveryState.discoveredHosts) {
+                            val isSelected = selectedIp.trim() == host.hostAddress &&
+                                selectedPort.trim() == host.port.toString()
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(if (isSelected) Color(0xFFEFF6FF) else Color.White)
+                                    .border(
+                                        width = if (isSelected) 1.5.dp else 1.dp,
+                                        color = if (isSelected) Color(0xFF2563EB) else Color(0xFFE2E8F0),
+                                        shape = RoundedCornerShape(10.dp)
+                                    )
+                                    .clickable { onSelectHost(host) }
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                                ) {
+                                    Text(
+                                        text = host.displayName,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 13.sp,
+                                        color = Color(0xFF0F172A),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = "${host.hostAddress}:${host.port}",
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 11.sp,
+                                        color = Color(0xFF475569)
+                                    )
+                                    if (host.codeRequired) {
+                                        Text(
+                                            text = "Join code required",
+                                            fontSize = 10.sp,
+                                            color = Color(0xFFB45309),
+                                            fontWeight = FontWeight.Medium
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .background(
+                                            color = if (isSelected) Color(0xFF2563EB) else Color(0xFFF1F5F9),
+                                            shape = RoundedCornerShape(8.dp)
+                                        )
+                                        .padding(horizontal = 10.dp, vertical = 5.dp)
+                                ) {
+                                    Text(
+                                        text = if (isSelected) "✓ Selected" else "Select",
+                                        color = if (isSelected) Color.White else Color(0xFF334155),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
  * Host Waiting Banner: Shown on Phone A while waiting for a receiver to connect.
  */
 @Composable
@@ -613,6 +915,8 @@ private fun HostWaitingBanner(
     localIp: String?,
     sessionCode: String? = null,
     isIpCopied: Boolean,
+    isAdvertising: Boolean = false,
+    advertisedServiceName: String? = null,
     onCopyIp: (String) -> Unit
 ) {
     Card(
@@ -630,8 +934,16 @@ private fun HostWaitingBanner(
                 fontWeight = FontWeight.Bold,
                 color = Color(0xFF1E3A8A)
             )
+            if (isAdvertising) {
+                Text(
+                    text = "● Auto-discoverable on Wi-Fi (${advertisedServiceName ?: "_localcast._tcp"})",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color(0xFF15803D)
+                )
+            }
             Text(
-                text = "Enter this IP on Phone B:",
+                text = "Or enter this IP on Phone B:",
                 fontSize = 12.sp,
                 color = Color(0xFF3B82F6)
             )
@@ -922,13 +1234,13 @@ private fun DiagnosticsAccordion(
             ) {
                 Column {
                     Text(
-                        text = "Advanced Diagnostics (M0–M4)",
+                        text = "Advanced Diagnostics (M0–M5)",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFF0D254C)
                     )
                     Text(
-                        text = "Low-level WebRTC, network telemetry, and log events",
+                        text = "Low-level WebRTC, mDNS/NSD, network telemetry, and log events",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color(0xFF64748B),
                         fontSize = 11.sp
@@ -950,7 +1262,7 @@ private fun DiagnosticsAccordion(
                 ) {
                     HorizontalDivider(color = Color(0xFFE2E8F0))
 
-                    // M0–M4 Telemetry Rows
+                    // M0–M5 Telemetry Rows
                     val engine = state.mediaEngineStatus
                     Text(
                         text = "M0 WebRTC: ${if (engine.initialized) "OK (${engine.primaryAbi}, LocalICE=${engine.localOnlyIceConfigured})" else "Uninitialized"}",
@@ -966,6 +1278,13 @@ private fun DiagnosticsAccordion(
                     )
                     Text(
                         text = "M1 Wi-Fi: ${state.wifiStatus.statusMessage}",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp
+                    )
+                    val disc = state.discoveryState
+                    Text(
+                        text = "M5 NSD: ${disc.status.name} · Adv=${disc.isAdvertising} · Hosts=${disc.discoveredHosts.size} (${disc.statusMessage})",
                         style = MaterialTheme.typography.bodySmall,
                         fontFamily = FontFamily.Monospace,
                         fontSize = 11.sp

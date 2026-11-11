@@ -80,6 +80,47 @@ object LocalNetworkPermissionHelper {
     }
 
     /**
+     * Returns the list of runtime permissions needed strictly for local network mDNS/NSD discovery
+     * (Join tab browsing).
+     *
+     * Intentionally separated from streaming/notification permissions (`CAMERA`, `RECORD_AUDIO`,
+     * `POST_NOTIFICATIONS`) so browsing for nearby hosts never prompts prematurely for media or
+     * notification permissions.
+     *
+     * - API 37+ (Android 17+): `[android.permission.ACCESS_LOCAL_NETWORK]`
+     * - API 29–36 (Android 10–16): empty list (LAN/multicast access is implicit via manifest)
+     */
+    fun requiredDiscoveryPermissions(sdkInt: Int = Build.VERSION.SDK_INT): List<String> {
+        return if (requiresRuntimeLocalNetworkPermission(sdkInt)) {
+            listOf(PERMISSION_ACCESS_LOCAL_NETWORK)
+        } else {
+            emptyList()
+        }
+    }
+
+    /**
+     * Checks whether local network discovery can proceed without additional runtime permission prompts.
+     */
+    fun isDiscoveryReady(
+        context: Context,
+        sdkInt: Int = Build.VERSION.SDK_INT
+    ): Boolean {
+        return isLocalNetworkAuthorized(context, sdkInt)
+    }
+
+    /**
+     * Filters [permissions] down to only those not currently granted by the OS.
+     */
+    fun filterUngrantedPermissions(
+        context: Context,
+        permissions: List<String>
+    ): List<String> {
+        return permissions.filter { permission ->
+            ContextCompat.checkSelfPermission(context, permission) != PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    /**
      * Returns the list of runtime permissions needed before starting Publisher (Phone A) mode.
      */
     fun requiredPublisherPermissions(sdkInt: Int = Build.VERSION.SDK_INT): List<String> {

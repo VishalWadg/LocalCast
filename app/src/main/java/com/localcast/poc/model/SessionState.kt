@@ -151,6 +151,7 @@ data class SessionState(
     val rtcStatus: WebRtcSessionStatus = WebRtcSessionStatus(),
     val mediaStatus: MediaStreamStatus = MediaStreamStatus(),
     val foregroundServiceStatus: ForegroundServiceStatus = ForegroundServiceStatus(),
+    val discoveryState: DiscoveryState = DiscoveryState(),
     val statusBanner: String = "Ready — Host on Phone A or Connect from Phone B",
     val lastError: String? = null,
     val diagnosticLogs: List<DiagnosticLogEntry> = emptyList()

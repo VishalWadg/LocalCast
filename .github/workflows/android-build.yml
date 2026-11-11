@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   build-apk:
-    name: Build Debug APK & Run Unit Tests (M0–M4 · API 37 / AGP 9.1.1)
+    name: Build Debug APK & Run Unit Tests (M0–M5 · API 37 / AGP 9.1.1)
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -44,7 +44,7 @@ jobs:
         with:
           gradle-version: "9.3.1"
 
-      - name: Run M0–M4 Unit Tests
+      - name: Run M0–M5 Unit Tests
         run: gradle :app:testDebugUnitTest --stacktrace --no-daemon
 
       - name: Assemble Debug APK
@@ -72,7 +72,7 @@ jobs:
           name: "LocalCast POC v0.1 Automated Build (main #${{ github.run_number }})"
           body: |
             Automated Debug APK build from `main` branch commit `${{ github.sha }}`.
-            - **Milestones included:** M0 (WebRTC Native Engine Init) + M1 (Wi-Fi Binding & Ktor Local WebSocket Signaling) + M2 (WebRTC SDP Offer/Answer & Local Host-Candidate ICE) + M3 (Camera2 720p/480p + Microphone Streaming & Compose SurfaceViewRenderer) + M4 (StreamingForegroundService & Ongoing Notification)
+            - **Milestones included:** M0 (WebRTC Native Engine Init) + M1 (Wi-Fi Binding & Ktor Local WebSocket Signaling) + M2 (WebRTC SDP Offer/Answer & Local Host-Candidate ICE) + M3 (Camera2 720p/480p + Microphone Streaming & Compose SurfaceViewRenderer) + M4 (StreamingForegroundService & Ongoing Notification) + M5 (ZeroConf / mDNS Local Wi-Fi Auto-Discovery via NsdManager)
             - **Toolchain:** AGP 9.1.1 · Gradle 9.3.1 · Kotlin 2.4.21 · JDK 17 · Compile/Target SDK 37 · Min SDK 29
           files: dist/LocalCast-poc-v0.1.0-debug.apk
           prerelease: true
@@ -97,7 +97,8 @@ jobs:
           CAPTION+="• Local Wi-Fi socket signaling via Ktor (M1)"$'\n'
           CAPTION+="• WebRTC SDP offer/answer & local host-candidate ICE (M2)"$'\n'
           CAPTION+="• Camera2 720p/480p & mic live streaming (M3)"$'\n'
-          CAPTION+="• StreamingForegroundService & ongoing persistent notification (M4)"$'\n\n'
+          CAPTION+="• StreamingForegroundService & ongoing persistent notification (M4)"$'\n'
+          CAPTION+="• ZeroConf / mDNS local Wi-Fi auto-discovery (M5)"$'\n\n'
           CAPTION+="📥 <a href=\"https://github.com/${{ github.repository }}/releases/download/main-latest/LocalCast-poc-v0.1.0-debug.apk\">Direct APK Download</a>"$'\n'
           CAPTION+="🌐 <a href=\"https://github.com/${{ github.repository }}/releases/tag/main-latest\">GitHub Release Notes</a>"
 

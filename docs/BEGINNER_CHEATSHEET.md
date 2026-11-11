@@ -17,6 +17,7 @@ This guide is designed for developers, students, and beginners who want to maste
 | **SurfaceViewRenderer**| A canvas on the screen | A specialized Android View from Google's WebRTC library that draws incoming video frames directly onto the device's GPU. |
 | **EglBase** | An OpenGL engine room | A shared graphics context that lets the camera, video encoder, and screen renderer pass GPU textures to each other without copying pixels in CPU memory. |
 | **Foreground Service** | A high-priority background worker | An Android background component with an ongoing notification that tells the operating system: *"Do not kill this app; it is actively using the camera and microphone for the user."* |
+| **ZeroConf / mDNS (`NsdManager`)** | Local Wi-Fi radar | A zero-configuration local network broadcast (`_localcast._tcp`) that lets Phone A announce itself on Wi-Fi so Phone B discovers its IP and port automatically without manual typing. |
 
 ---
 
@@ -34,8 +35,8 @@ This guide is designed for developers, students, and beginners who want to maste
 ### Q4: "Why does WebRTC use UDP instead of TCP for video?"
 > **Answer:** TCP guarantees delivery by retransmitting lost packets. In live video streaming, if packet #5 drops, TCP pauses the stream until packet #5 is resent, causing a noticeable freeze. WebRTC uses UDP (specifically RTP): if a packet drops, it skips it and renders the next available frame immediately, maintaining ultra-low sub-100ms latency.
 
-### Q5: "Why did the Telegram bot reject our APK with error 413?"
-> **Answer:** The official Telegram Bot API has a strict file upload limit of 50 MB. Because LocalCast bundles Google's precompiled WebRTC native C++ binaries (`.so` files) for all four major Android CPU architectures (`arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64`), the fat debug APK was ~81 MB. Our CI/CD pipeline intelligently detects when the APK exceeds 50 MB and delivers a rich HTML release card with a direct download button pointing to GitHub Releases.
+### Q5: "Why did the Telegram bot reject our earlier APK with error 413, and how was it fixed?"
+> **Answer:** The official Telegram Bot API has a strict 50 MB (`50,000,000` bytes) file upload limit for `sendDocument`. Because WebRTC bundles precompiled C++ native binaries (`.so` files) for four CPU architectures (`arm64-v8a`, `armeabi-v7a`, `x86`, `x86_64`), the unoptimized fat debug APK was ~81.67 MB. By restricting `ndk.abiFilters` to physical ARM mobile CPUs (`arm64-v8a`, `armeabi-v7a`) and enabling compressed `jniLibs.useLegacyPackaging = true` in `app/build.gradle.kts`, we shrank the APK to ~48.20 MB (`48,201,908` bytes), enabling direct APK binary upload via `sendDocument` with a strict 50 MB fail-fast CI check.
 
 ### Q6: "Why write a custom `SignalCodec` instead of using Gson or Jackson?"
 > **Answer:** WebRTC SDP strings contain multiline formatting with explicit carriage-return line feeds (`\r\n`). Standard reflection-based JSON libraries often strip or escape these characters inconsistently, breaking WebRTC's C++ SDP parser. A pure-Kotlin tokenizer has zero external dependencies, zero reflection performance overhead, and guarantees strict character preservation.

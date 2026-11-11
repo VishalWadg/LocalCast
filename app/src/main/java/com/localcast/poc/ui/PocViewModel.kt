@@ -6,6 +6,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.localcast.poc.model.DiscoveredHost
 import com.localcast.poc.model.SessionState
 import com.localcast.poc.service.SessionRuntimeCoordinator
 import kotlinx.coroutines.delay
@@ -17,11 +18,12 @@ import kotlinx.coroutines.launch
 import org.webrtc.SurfaceViewRenderer
 
 /**
- * Observable UI state holder for `PocScreen` across Milestones M0–M4.
+ * Observable UI state holder for `PocScreen` across Milestones M0–M5.
  *
- * Manages UI mode selection (Host vs Join), input validation, collapsible diagnostics,
- * and clipboard copy operations, delegating WebRTC, Camera/Mic, ForegroundService,
- * and Ktor WebSocket operations to [SessionRuntimeCoordinator].
+ * Manages UI mode selection (Host vs Join), input validation, discovered host selection,
+ * collapsible diagnostics, and clipboard copy operations, delegating WebRTC, Camera/Mic,
+ * NSD discovery/advertisement, ForegroundService, and Ktor WebSocket operations to
+ * [SessionRuntimeCoordinator].
  */
 class PocViewModel @JvmOverloads constructor(
     application: Application,
@@ -39,7 +41,7 @@ class PocViewModel @JvmOverloads constructor(
     private val _uiState = MutableStateFlow(PocUiState())
     val uiState: StateFlow<PocUiState> = _uiState.asStateFlow()
 
-    // --- UI State Handling (Requirement R3) ---
+    // --- UI State Handling (Requirement R3 + M5) ---
 
     fun selectMode(mode: UiMode) {
         _uiState.update { it.copy(selectedMode = mode, inputError = null) }
@@ -68,6 +70,19 @@ class PocViewModel @JvmOverloads constructor(
     }
 
     fun onJoinCodeChanged(code: String) = updateJoinCode(code)
+
+    /**
+     * M5: Populates target IPv4 address and signaling port from a tapped NSD-discovered host.
+     */
+    fun selectDiscoveredHost(host: DiscoveredHost) {
+        _uiState.update {
+            it.copy(
+                hostIpInput = host.hostAddress,
+                hostPortInput = host.port.toString(),
+                inputError = null
+            )
+        }
+    }
 
     fun toggleDiagnostics() {
         _uiState.update { it.copy(isDiagnosticsExpanded = !it.isDiagnosticsExpanded) }
@@ -147,6 +162,18 @@ class PocViewModel @JvmOverloads constructor(
 
     fun bindToWifi() {
         actualCoordinator.bindWifiNetwork()
+    }
+
+    fun startDiscovery(forceRefresh: Boolean = false) {
+        actualCoordinator.startDiscovery(forceRefresh = forceRefresh)
+    }
+
+    fun stopDiscovery() {
+        actualCoordinator.stopDiscovery()
+    }
+
+    fun refreshDiscovery() {
+        actualCoordinator.startDiscovery(forceRefresh = true)
     }
 
     fun startHostingAndShare(port: Int = 8765) {

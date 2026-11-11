@@ -2,7 +2,7 @@
 
 Welcome to the comprehensive architecture guide for **LocalCast**. This document explains how LocalCast achieves ultra-low-latency, peer-to-peer (P2P), completely offline audio/video streaming directly between two Android devices over a local Wi-Fi network.
 
-Whether you are a beginner looking to understand real-time streaming or preparing to present this project to teammates or interviewers, this guide breaks down every milestone (M0 through M4) with plain-English analogies, concrete code patterns, and interactive diagrams.
+Whether you are a beginner looking to understand real-time streaming or preparing to present this project to teammates or interviewers, this guide breaks down every milestone (M0 through M5) with plain-English analogies, concrete code patterns, and interactive diagrams.
 
 ---
 
@@ -13,16 +13,17 @@ To understand WebRTC and signaling without getting lost in technical jargon, con
 > [!NOTE]
 > ### 🏨 The Hotel Intercom Analogy
 > Imagine two people, **Alice (Phone A - Host)** and **Bob (Phone B - Receiver)**, staying in separate rooms in the same hotel.
-> 1. **The Signaling Channel (M1):** Alice and Bob pick up their bedside landline phones to call the hotel front desk. Alice says, *"I'm in Room 101."* Bob says, *"I want to talk to Alice in Room 101."* The front desk coordinates their room numbers and approves Bob's call. This is **Signaling**—it exchanges connection information, but no video travels across this line.
-> 2. **The SDP Contract (M2):** Over the landline, Alice writes down a list of what formats she can speak (*"I can send 720p H.264 video and 48kHz Opus audio"*) and sends that note to Bob. Bob replies (*"I accept H.264 and Opus"*). This note exchange is the **SDP Offer/Answer**.
-> 3. **The ICE Addresses (M2):** Both check their exact local addresses within the hotel (*"Walk down Hallway B, third door on the left"*). They exchange these slips of paper (**ICE Candidates**).
-> 4. **The Direct Media Stream (M3):** Once they know each other's exact room location and agreed media format, they open their hallway doors and stream directly between each other with walkie-talkies. The front desk phone is hung up! This is **Peer-to-Peer WebRTC**.
+> 1. **ZeroConf Discovery (M5):** Alice hangs a local notice board in her hallway (`_localcast._tcp` via mDNS) saying *"Alice's Room — knock on port 8765"* without writing down her secret door PIN. Bob glances at the hallway board on Wi-Fi and sees Alice's room immediately instead of typing her room number manually.
+> 2. **The Signaling Channel (M1):** Alice and Bob pick up their bedside landline phones to call the hotel front desk. Alice says, *"I'm in Room 101."* Bob says, *"I want to talk to Alice in Room 101."* The front desk coordinates their room numbers and approves Bob's call. This is **Signaling**—it exchanges connection information, but no video travels across this line.
+> 3. **The SDP Contract (M2):** Over the landline, Alice writes down a list of what formats she can speak (*"I can send 720p H.264 video and 48kHz Opus audio"*) and sends that note to Bob. Bob replies (*"I accept H.264 and Opus"*). This note exchange is the **SDP Offer/Answer**.
+> 4. **The ICE Addresses (M2):** Both check their exact local addresses within the hotel (*"Walk down Hallway B, third door on the left"*). They exchange these slips of paper (**ICE Candidates**).
+> 5. **The Direct Media Stream (M3):** Once they know each other's exact room location and agreed media format, they open their hallway doors and stream directly between each other with walkie-talkies. The front desk phone is hung up! This is **Peer-to-Peer WebRTC**.
 
 ---
 
 ## 2. High-Level System Architecture
 
-LocalCast is architected around a strict separation of concerns: UI, Runtime Service Management, Signaling, and the Native WebRTC Engine.
+LocalCast is architected around a strict separation of concerns: UI, Runtime Service Management, Discovery & Signaling, and the Native WebRTC Engine.
 
 ```mermaid
 flowchart TD
@@ -37,9 +38,10 @@ flowchart TD
         Coordinator["SessionRuntimeCoordinator (Central State Machine & Resource Owner)"]
     end
 
-    subgraph Network_Layer ["🌐 Local Network & Signaling Layer"]
+    subgraph Network_Layer ["🌐 Local Network, Discovery & Signaling Layer"]
         WifiCtrl["WifiNetworkController (Process-to-WiFi Binding)"]
-        PermHelper["LocalNetworkPermissionHelper (API 37+ Enforcement)"]
+        PermHelper["LocalNetworkPermissionHelper (API 37+ & Discovery Separation)"]
+        NsdCtrl["NsdDiscoveryController / LocalDiscoveryCoordinator (M5 mDNS)"]
         KtorServer["LocalSignalingServer (Ktor CIO WebSocket on :8765)"]
         KtorClient["SignalingClient (Ktor WebSocket Client)"]
         Codec["SignalCodec (Zero-Reflection Pure JSON Codec)"]
@@ -59,6 +61,7 @@ flowchart TD
     FGS --> Notification
     Coordinator --> WifiCtrl
     Coordinator --> PermHelper
+    Coordinator <--> NsdCtrl
     Coordinator <--> KtorServer
     Coordinator <--> KtorClient
     KtorServer <--> Codec
@@ -74,7 +77,7 @@ flowchart TD
 
 ---
 
-## 3. Milestones Deep Dive (M0 through M4)
+## 3. Milestones Deep Dive (M0 through M5)
 
 ### Milestone M0: Native WebRTC Core & Initialization
 
@@ -226,6 +229,23 @@ Android aggressively terminates background processes to conserve battery and RAM
 
 ---
 
+### Milestone M5: ZeroConf / mDNS Auto-Discovery (`NsdManager`)
+
+**Primary Classes:** [`LocalServiceDiscovery.kt`](file:///d:/LocalCast/app/src/main/java/com/localcast/poc/network/LocalServiceDiscovery.kt), [`NsdDiscoveryController.kt`](file:///d:/LocalCast/app/src/main/java/com/localcast/poc/network/NsdDiscoveryController.kt), [`NsdDiscoveryProtocol.kt`](file:///d:/LocalCast/app/src/main/java/com/localcast/poc/network/NsdDiscoveryProtocol.kt), [`LocalDiscoveryCoordinator.kt`](file:///d:/LocalCast/app/src/main/java/com/localcast/poc/network/LocalDiscoveryCoordinator.kt), [`DiscoveryModels.kt`](file:///d:/LocalCast/app/src/main/java/com/localcast/poc/model/DiscoveryModels.kt)
+
+#### The Goal
+Allow **Phone B (Join)** to discover active **Phone A (Host)** sessions automatically on the local Wi-Fi network without manually typing IPv4 addresses or ports, while adding zero external dependencies to protect the 50 MB APK limit.
+
+#### Key Architectural Solutions
+1. **Separated Discovery Permissions:** `LocalNetworkPermissionHelper.requiredDiscoveryPermissions()` requests `ACCESS_LOCAL_NETWORK` **only** on Android 17+ (`API 37+`) when opening Join mode, never prompting prematurely for `CAMERA`, `RECORD_AUDIO`, or `POST_NOTIFICATIONS`.
+2. **Privacy-Safe `_localcast._tcp` Advertisement:** Once Phone A's Ktor server starts listening, `NsdDiscoveryController` registers `_localcast._tcp` bound to the active Wi-Fi `Network` with safe TXT metadata (`deviceId`, `name`, `proto`, `codeReq`) — **never exposing the 6-digit `sessionCode`**.
+3. **Cross-API 29–37 Resolution Compatibility:**
+   - **Android 10–13 (API 29–33):** Acquires `WifiManager.MulticastLock` when `< T Ext 7` (`CHANGE_WIFI_MULTICAST_STATE`) and serializes `NsdManager.resolveService` through `SerialResolutionQueue` so concurrent discoveries never trigger `FAILURE_ALREADY_ACTIVE`.
+   - **Android 14–17 (API 34–37):** Uses `NsdManager.registerServiceInfoCallback` (`ServiceInfoCallback`) and `NsdServiceInfo.getHostAddresses()` scoped to Wi-Fi for continuous live updates and instant host loss removal.
+4. **One-Tap Join List + Manual Fallback:** `PocScreen` surfaces nearby hosts directly above the manual IPv4/port fields so tapping a host auto-fills IP and port while preserving manual entry at all times.
+
+---
+
 ## 4. Summary Table of Key Classes
 
 | Package | Class | Responsibility |
@@ -235,10 +255,12 @@ Android aggressively terminates background processes to conserve battery and RAM
 | `rtc` | [`PeerSession`](file:///d:/LocalCast/app/src/main/java/com/localcast/poc/rtc/PeerSession.kt) | Manages native `PeerConnection`, SDP negotiation, and ICE candidate queue |
 | `capture` | [`CameraMicCapture`](file:///d:/LocalCast/app/src/main/java/com/localcast/poc/capture/CameraMicCapture.kt) | Camera2 capturer with 720p/480p fallback and front/back toggle |
 | `network` | [`WifiNetworkController`](file:///d:/LocalCast/app/src/main/java/com/localcast/poc/network/WifiNetworkController.kt) | Binds socket traffic to the Wi-Fi interface via Android `ConnectivityManager` |
-| `network` | [`LocalNetworkPermissionHelper`](file:///d:/LocalCast/app/src/main/java/com/localcast/poc/network/LocalNetworkPermissionHelper.kt) | Handles conditional `ACCESS_LOCAL_NETWORK` for Android 17 (API 37+) |
+| `network` | [`LocalNetworkPermissionHelper`](file:///d:/LocalCast/app/src/main/java/com/localcast/poc/network/LocalNetworkPermissionHelper.kt) | Handles conditional `ACCESS_LOCAL_NETWORK` (API 37+) and separated discovery permissions |
+| `network` | [`NsdDiscoveryController`](file:///d:/LocalCast/app/src/main/java/com/localcast/poc/network/NsdDiscoveryController.kt) | Cross-API 29–37 `NsdManager` / `MulticastLock` advertisement & discovery |
+| `network` | [`LocalDiscoveryCoordinator`](file:///d:/LocalCast/app/src/main/java/com/localcast/poc/network/LocalDiscoveryCoordinator.kt) | Testable discovery state & self-filtering coordinator |
 | `signaling` | [`LocalSignalingServer`](file:///d:/LocalCast/app/src/main/java/com/localcast/poc/signaling/LocalSignalingServer.kt) | Embedded Ktor CIO WebSocket server on port 8765 |
 | `signaling` | [`SignalingClient`](file:///d:/LocalCast/app/src/main/java/com/localcast/poc/signaling/SignalingClient.kt) | Ktor WebSocket client for receiver devices |
 | `signaling` | [`SignalCodec`](file:///d:/LocalCast/app/src/main/java/com/localcast/poc/signaling/SignalCodec.kt) | Zero-reflection pure-Kotlin JSON parser and serializer |
 | `service` | [`SessionRuntimeCoordinator`](file:///d:/LocalCast/app/src/main/java/com/localcast/poc/service/SessionRuntimeCoordinator.kt) | Central orchestrator owning session state across Activity lifecycles |
 | `service` | [`StreamingForegroundService`](file:///d:/LocalCast/app/src/main/java/com/localcast/poc/service/StreamingForegroundService.kt) | Manages ongoing foreground camera/mic service execution |
-| `ui` | [`PocScreen`](file:///d:/LocalCast/app/src/main/java/com/localcast/poc/ui/PocScreen.kt) | Jetpack Compose UI hosting video viewports and telemetry cards |
+| `ui` | [`PocScreen`](file:///d:/LocalCast/app/src/main/java/com/localcast/poc/ui/PocScreen.kt) | Jetpack Compose UI hosting nearby hosts list, video viewports, and telemetry cards |

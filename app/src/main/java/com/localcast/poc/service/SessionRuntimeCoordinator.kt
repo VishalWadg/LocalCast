@@ -8,6 +8,7 @@ import android.media.AudioManager
 import android.os.Build
 import com.localcast.poc.model.DeviceInfo
 import com.localcast.poc.model.DiagnosticLogEntry
+import com.localcast.poc.model.DiscoveryStatus
 import com.localcast.poc.model.ForegroundServiceStatus
 import com.localcast.poc.model.MediaStreamStatus
 import com.localcast.poc.model.PendingJoinRequest
@@ -16,8 +17,12 @@ import com.localcast.poc.model.SessionPhase
 import com.localcast.poc.model.SessionRole
 import com.localcast.poc.model.SessionState
 import com.localcast.poc.model.WebRtcSessionStatus
+import com.localcast.poc.network.LocalDiscoveryCoordinator
 import com.localcast.poc.network.LocalNetworkPermissionHelper
+import com.localcast.poc.network.LocalServiceDiscovery
+import com.localcast.poc.network.NsdDiscoveryController
 import com.localcast.poc.network.WifiNetworkController
+import com.localcast.poc.network.WifiProbe
 import com.localcast.poc.rtc.MediaEngine
 import com.localcast.poc.rtc.PeerSession
 import com.localcast.poc.rtc.PeerSessionCallback
@@ -45,23 +50,25 @@ import java.util.UUID
 import kotlin.random.Random
 
 /**
- * Process-level runtime coordinator that owns the active M0–M4 session state,
- * [MediaEngine] instance, Wi-Fi network binding, Ktor WebSocket signaling, WebRTC
- * [PeerSession], Camera/Mic capture, and [StreamingForegroundService] synchronization.
+ * Process-level runtime coordinator that owns the active M0–M5 session state,
+ * [MediaEngine] instance, Wi-Fi network binding, M5 NSD service discovery/advertisement,
+ * Ktor WebSocket signaling, WebRTC [PeerSession], Camera/Mic capture, and
+ * [StreamingForegroundService] synchronization.
  *
  * Critical ownership rule (Spec Section 3 & Section 5):
  * Active PeerConnection and capture objects never live inside `MainActivity` or a Composable.
  * The Activity can be minimized or recreated while `StreamingForegroundService` and this
  * coordinator keep the active stream alive.
  */
-class SessionRuntimeCoordinator private constructor(
+class SessionRuntimeCoordinator internal constructor(
     context: Context,
-    val mediaEngine: MediaEngine = WebRtcFactory()
+    val mediaEngine: MediaEngine = WebRtcFactory(),
+    private val serviceDiscovery: LocalServiceDiscovery? = NsdDiscoveryController(context.applicationContext ?: context)
 ) {
-    private val appContext = context.applicationContext
+    private val appContext = context.applicationContext ?: context
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val wifiController = WifiNetworkController(appContext)
-    private val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
     private var audioFocusRequest: AudioFocusRequest? = null
 
     private val localDevice = DeviceInfo(
@@ -79,6 +86,28 @@ class SessionRuntimeCoordinator private constructor(
     )
     val state: StateFlow<SessionState> = _state.asStateFlow()
 
+    private val discoveryCoordinator: LocalDiscoveryCoordinator? = serviceDiscovery?.let { discovery ->
+        LocalDiscoveryCoordinator(
+            localDeviceId = localDevice.deviceId,
+            localDisplayName = localDevice.displayName,
+            serviceDiscovery = discovery,
+            isDiscoveryAuthorized = { LocalNetworkPermissionHelper.isDiscoveryReady(appContext) },
+            wifiProbeProvider = {
+                val wifiStatus = wifiController.inspectCurrentWifiStatus()
+                val network = wifiController.activeWifiNetwork()
+                WifiProbe(
+                    isWifiAvailable = network != null || !wifiStatus.localIpv4Address.isNullOrBlank(),
+                    wifiNetwork = network,
+                    localIpv4Address = wifiStatus.localIpv4Address
+                )
+            },
+            onStateChanged = { nextDiscovery ->
+                _state.update { it.copy(discoveryState = nextDiscovery) }
+            },
+            onLog = { tag, msg -> appendLog(tag, msg) }
+        )
+    }
+
     private var serverTransport: SignalingServerTransport? = null
     private var clientTransport: SignalingClientTransport? = null
     private var clientJob: Job? = null
@@ -90,11 +119,70 @@ class SessionRuntimeCoordinator private constructor(
     fun refreshEnvironmentStatus() {
         val perms = LocalNetworkPermissionHelper.evaluateStatus(appContext)
         val wifi = wifiController.inspectCurrentWifiStatus()
-        _state.update {
-            it.copy(
+        _state.update { current ->
+            val updatedDiscovery = if (
+                perms.localNetworkGranted &&
+                current.discoveryState.status == DiscoveryStatus.PERMISSION_REQUIRED
+            ) {
+                current.discoveryState.copy(
+                    status = DiscoveryStatus.IDLE,
+                    statusMessage = "Local network access granted — ready to scan",
+                    lastError = null
+                )
+            } else {
+                current.discoveryState
+            }
+            current.copy(
                 permissions = perms,
-                wifiStatus = wifi
+                wifiStatus = wifi,
+                discoveryState = updatedDiscovery
             )
+        }
+    }
+
+    /**
+     * M5: Starts browsing for nearby `_localcast._tcp` hosts on the local Wi-Fi network.
+     */
+    fun startDiscovery(forceRefresh: Boolean = false) {
+        scope.launch(lifecycleDispatcher) {
+            val coordinator = discoveryCoordinator ?: return@launch
+            refreshEnvironmentStatus()
+            if (!wifiController.isWifiMonitorActive()) {
+                wifiController.startWifiMonitor(
+                    onWifiAvailable = {
+                        scope.launch(lifecycleDispatcher) {
+                            val activeCoordinator = discoveryCoordinator ?: return@launch
+                            refreshEnvironmentStatus()
+                            val current = _state.value
+                            if (wifiController.isWifiMonitorActive() &&
+                                current.role == SessionRole.NONE &&
+                                current.discoveryState.status == DiscoveryStatus.WIFI_UNAVAILABLE
+                            ) {
+                                activeCoordinator.startClientDiscovery(forceRestart = false)
+                            }
+                        }
+                    },
+                    onWifiLost = {
+                        scope.launch(lifecycleDispatcher) {
+                            val activeCoordinator = discoveryCoordinator ?: return@launch
+                            refreshEnvironmentStatus()
+                            activeCoordinator.onWifiLost()
+                        }
+                    }
+                )
+            }
+            coordinator.startClientDiscovery(forceRestart = forceRefresh)
+        }
+    }
+
+    /**
+     * M5: Stops active `_localcast._tcp` browsing and releases discovery callbacks/locks.
+     */
+    fun stopDiscovery() {
+        scope.launch(lifecycleDispatcher) {
+            val coordinator = discoveryCoordinator ?: return@launch
+            wifiController.stopWifiMonitor()
+            coordinator.stopClientDiscovery()
         }
     }
 
@@ -156,6 +244,7 @@ class SessionRuntimeCoordinator private constructor(
         val wifi = wifiController.bindToWifiNetwork(
             onWifiLost = {
                 appendLog("M1-WIFI", "Wi-Fi network lost during active session")
+                discoveryCoordinator?.onWifiLost()
                 _state.update { current ->
                     current.copy(
                         phase = if (current.phase == SessionPhase.IDLE) SessionPhase.IDLE else SessionPhase.DISCONNECTED,
@@ -179,21 +268,33 @@ class SessionRuntimeCoordinator private constructor(
     }
 
     /**
-     * M1 + M3 + M4 (Phone A — Host / Publisher):
-     * 1. Verifies WebRTC initialization & Camera/Microphone permissions.
+     * M1 + M3 + M4 + M5 (Phone A — Host / Publisher):
+     * 1. Verifies WebRTC initialization & Camera/Microphone/Local Network permissions.
      * 2. Binds process to Wi-Fi.
      * 3. Starts StreamingForegroundService (M4) from visible state.
      * 4. Starts Camera2 (720p@30fps -> 480p fallback) + Microphone capture (M3).
      * 5. Starts Ktor CIO WebSocket signaling server on `<wifi-ip>:8765/signal` (M1).
+     * 6. Advertises `_localcast._tcp` via NsdManager once server is listening (M5).
      */
     fun startHostingAndPreview(port: Int = 8765) {
-        scope.launch {
+        scope.launch(lifecycleDispatcher) {
+            discoveryCoordinator?.let {
+                wifiController.stopWifiMonitor()
+                it.stopClientDiscovery()
+            }
             val perms = LocalNetworkPermissionHelper.evaluateStatus(appContext)
             _state.update { it.copy(permissions = perms) }
 
             if (!perms.cameraGranted || !perms.microphoneGranted) {
                 val msg = "Camera and Microphone permissions are required on Phone A to publish media."
                 appendLog("M3-PERM", msg)
+                _state.update { it.copy(lastError = msg, statusBanner = msg) }
+                return@launch
+            }
+
+            if (!perms.localNetworkGranted) {
+                val msg = "ACCESS_LOCAL_NETWORK runtime permission is required on Android 17 (API 37+)"
+                appendLog("M1-PERM", msg)
                 _state.update { it.copy(lastError = msg, statusBanner = msg) }
                 return@launch
             }
@@ -381,7 +482,7 @@ class SessionRuntimeCoordinator private constructor(
             return
         }
 
-        scope.launch {
+        scope.launch(lifecycleDispatcher) {
             if (!mediaEngine.currentStatus().initialized) {
                 val initStatus = mediaEngine.initialize(appContext)
                 _state.update { it.copy(mediaEngineStatus = initStatus) }
@@ -390,9 +491,18 @@ class SessionRuntimeCoordinator private constructor(
 
             if (!_state.value.wifiStatus.isBoundToWifi) {
                 val bound = bindWifiNetwork()
-                if (!bound) return@launch
+                if (!bound) {
+                    if (wifiController.activeWifiNetwork() == null) {
+                        discoveryCoordinator?.onWifiLost()
+                    }
+                    return@launch
+                }
             }
 
+            discoveryCoordinator?.let {
+                wifiController.stopWifiMonitor()
+                it.stopClientDiscovery()
+            }
             stopActiveSignalingAndRtcInternal()
             configureVoiceCommunicationAudioRoute(enable = true)
 
@@ -602,7 +712,7 @@ class SessionRuntimeCoordinator private constructor(
      * Idempotent so calling stop multiple times never crashes or leaks resources.
      */
     fun stopSession() {
-        scope.launch {
+        scope.launch(lifecycleDispatcher) {
             _state.update { it.copy(phase = SessionPhase.STOPPING, statusBanner = "Stopping session...") }
             val current = _state.value
             val sessionId = current.sessionId ?: "poc-session"
@@ -634,10 +744,14 @@ class SessionRuntimeCoordinator private constructor(
             }
 
             stopActiveSignalingAndRtcInternal()
+            discoveryCoordinator?.let {
+                wifiController.stopWifiMonitor()
+                it.stopClientDiscovery()
+            }
             StreamingForegroundService.stop(appContext)
             configureVoiceCommunicationAudioRoute(enable = false)
             val wifiStatus = wifiController.unbindProcessFromWifi()
-            appendLog("SESSION", "Session stopped · Camera/Mic, WebRTC, FGS, and Wi-Fi binding released")
+            appendLog("SESSION", "Session stopped · Camera/Mic, WebRTC, FGS, NSD, and Wi-Fi binding released")
 
             _state.update {
                 it.copy(
@@ -660,6 +774,7 @@ class SessionRuntimeCoordinator private constructor(
     }
 
     private suspend fun stopActiveSignalingAndRtcInternal() {
+        discoveryCoordinator?.stopHostAdvertisement()
         mediaEngine.closePeerSession()
         mediaEngine.stopLocalCapture()
         clientJob?.cancel()
@@ -824,6 +939,11 @@ class SessionRuntimeCoordinator private constructor(
                     lastError = null
                 )
             }
+            discoveryCoordinator?.startHostAdvertisement(
+                port = port,
+                protocolVersion = SignalMessage.PROTOCOL_VERSION,
+                codeRequired = false
+            )
         }
 
         override fun onClientSocketConnected(remoteAddress: String) {
@@ -870,6 +990,7 @@ class SessionRuntimeCoordinator private constructor(
 
         override fun onServerError(reason: String) {
             appendLog("M1-HOST-ERR", reason)
+            discoveryCoordinator?.stopHostAdvertisement()
             _state.update {
                 it.copy(
                     phase = SessionPhase.FAILED,
@@ -1193,9 +1314,10 @@ class SessionRuntimeCoordinator private constructor(
 
     @Suppress("DEPRECATION")
     private fun configureVoiceCommunicationAudioRoute(enable: Boolean) {
+        val am = audioManager ?: return
         runCatching {
             if (enable) {
-                audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+                am.mode = AudioManager.MODE_IN_COMMUNICATION
                 val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
                     .setAudioAttributes(
                         AudioAttributes.Builder()
@@ -1205,27 +1327,27 @@ class SessionRuntimeCoordinator private constructor(
                     )
                     .build()
                 audioFocusRequest = req
-                audioManager.requestAudioFocus(req)
+                am.requestAudioFocus(req)
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    val speaker = audioManager.availableCommunicationDevices.firstOrNull {
+                    val speaker = am.availableCommunicationDevices.firstOrNull {
                         it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
                     }
                     if (speaker != null) {
-                        audioManager.setCommunicationDevice(speaker)
+                        am.setCommunicationDevice(speaker)
                     }
                 } else {
-                    audioManager.isSpeakerphoneOn = true
+                    am.isSpeakerphoneOn = true
                 }
             } else {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    audioManager.clearCommunicationDevice()
+                    am.clearCommunicationDevice()
                 } else {
-                    audioManager.isSpeakerphoneOn = false
+                    am.isSpeakerphoneOn = false
                 }
-                audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+                audioFocusRequest?.let { am.abandonAudioFocusRequest(it) }
                 audioFocusRequest = null
-                audioManager.mode = AudioManager.MODE_NORMAL
+                am.mode = AudioManager.MODE_NORMAL
             }
         }
     }
@@ -1243,6 +1365,8 @@ class SessionRuntimeCoordinator private constructor(
     }
 
     companion object {
+        private val lifecycleDispatcher = Dispatchers.IO.limitedParallelism(1)
+
         @Volatile
         private var instance: SessionRuntimeCoordinator? = null
 

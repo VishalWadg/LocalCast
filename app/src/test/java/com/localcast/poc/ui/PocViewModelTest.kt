@@ -3,6 +3,7 @@ package com.localcast.poc.ui
 import android.app.Application
 import androidx.compose.runtime.saveable.SaverScope
 import com.localcast.poc.model.DeviceInfo
+import com.localcast.poc.model.DiscoveredHost
 import com.localcast.poc.model.MediaStreamStatus
 import com.localcast.poc.model.PendingJoinRequest
 import com.localcast.poc.model.SessionPhase
@@ -563,5 +564,35 @@ class PocViewModelTest {
         val remoteRenderer = createDummyRenderer()
         vmWithCoordinator.bindRemoteVideoRenderer(remoteRenderer)
         assertTrue(fakeEngine.boundRemoteRenderers.contains(remoteRenderer))
+    }
+
+    @Test
+    fun `Tier1 - selectDiscoveredHost populates hostIpInput and hostPortInput and clears inputError`() {
+        viewModel.selectMode(UiMode.JOIN)
+        viewModel.setInputError("Invalid IPv4 address format: bad")
+
+        val host = DiscoveredHost(
+            serviceName = "LocalCast - Pixel 10 [ab12]",
+            displayName = "Pixel 10",
+            deviceId = "android-ab12",
+            hostAddress = "192.168.1.77",
+            port = 8766
+        )
+
+        viewModel.selectDiscoveredHost(host)
+        assertEquals("192.168.1.77", viewModel.uiState.value.hostIpInput)
+        assertEquals("8766", viewModel.uiState.value.hostPortInput)
+        assertNull("Selecting a discovered host must clear inputError", viewModel.uiState.value.inputError)
+        assertTrue(viewModel.validateJoinInputs())
+    }
+
+    @Test
+    fun `Tier3 - PocViewModel startDiscovery refreshDiscovery and stopDiscovery handle test coordinator cleanly without crash`() {
+        val coordinator = createTestCoordinator(fakeEngine)
+        val vmWithCoordinator = PocViewModel(mockApplication, coordinator)
+        vmWithCoordinator.startDiscovery()
+        vmWithCoordinator.refreshDiscovery()
+        vmWithCoordinator.stopDiscovery()
+        assertEquals(UiMode.HOST, vmWithCoordinator.uiState.value.selectedMode)
     }
 }

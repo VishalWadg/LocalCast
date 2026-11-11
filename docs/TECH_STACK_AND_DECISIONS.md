@@ -111,10 +111,23 @@ If you are explaining this project in a code review, technical presentation, or 
   1. **Packaging Optimization:**
      - Configure `packaging.jniLibs.useLegacyPackaging = true` in `app/build.gradle.kts` to enable DEFLATE compression on native libraries.
      - Restrict packaged ABIs via `defaultConfig.ndk.abiFilters.addAll(listOf("arm64-v8a", "armeabi-v7a"))` to physical ARM mobile devices, excluding unneeded desktop emulator binaries (`x86`, `x86_64`).
-     - This reduces the compiled debug APK from ~81.67 MB to ~20.5–22 MB, providing >28 MB (>55%) of safety headroom below the 50 MB Telegram ceiling.
+     - This shrinks the compiled debug APK from ~81.67 MB to ~48.20 MB (`48,201,908` bytes verified on CI), leaving ~1.80 MB of headroom below the 50 MB (`50,000,000`-byte) Telegram ceiling and motivating zero-dependency platform API choices going forward.
   2. **Direct Delivery Pipeline:**
      - Remove the `sendMessage` fallback branch completely. Delivery is guaranteed to be direct binary upload via `sendDocument`.
      - In `.github/workflows/android-build.yml`, enforce an explicit pre-flight check asserting the staged APK exists and its byte size is strictly $\le$ 50,000,000 bytes (failing with `exit 1` immediately if exceeded).
      - Upload via `curl` with retries/timeouts (`--retry 3 --retry-delay 5 --connect-timeout 30 --max-time 300`) and strictly validate that the Telegram API response contains `"ok":true`.
 * **Why This Matters:**
   - Guarantees testers receive the installable APK binary directly inside the Telegram group on every successful CI build without external link navigation, while maintaining a strict fail-fast CI guardrail against artifact size regressions.
+
+---
+
+### ADR-9: Built-In Platform `NsdManager` vs. Third-Party mDNS Libraries (JmDNS)
+
+* **Context:** Milestone M5 adds automatic local Wi-Fi host discovery (`_localcast._tcp`) so Phone B discovers Phone A without manually typing IPv4 addresses.
+* **Alternative Considered:** Adding external JVM mDNS libraries such as `org.jmdns:jmdns` or custom UDP multicast packet listeners.
+* **The Decision:** Use Android's built-in platform `NsdManager` + `WifiManager.MulticastLock` isolated behind [`LocalServiceDiscovery`](file:///d:/LocalCast/app/src/main/java/com/localcast/poc/network/LocalServiceDiscovery.kt) and [`NsdDiscoveryController`](file:///d:/LocalCast/app/src/main/java/com/localcast/poc/network/NsdDiscoveryController.kt).
+* **Why This Matters:**
+  - **Zero Dependency Size Overhead:** With the debug APK at ~48.20 MB against Telegram's strict 50 MB (`50,000,000` byte) ceiling, platform `NsdManager` preserves nearly all of the ~1.80 MB headroom.
+  - **Android 17 (`API 37+`) Local Network Compliance:** System `NsdManager` integrates cleanly with `ACCESS_LOCAL_NETWORK` and Wi-Fi `Network` scoping, while `LocalNetworkPermissionHelper.requiredDiscoveryPermissions()` keeps Join discovery separated from `CAMERA`, `RECORD_AUDIO`, and `POST_NOTIFICATIONS` prompts.
+  - **Cross-API Reliability (API 29–37):** Combines `SerialResolutionQueue` (preventing `FAILURE_ALREADY_ACTIVE` on Android 10–13 `resolveService`) with `ServiceInfoCallback` + `getHostAddresses()` on Android 14–17.
+  - **Security by Design:** `HostAdvertisementConfig` and `NsdDiscoveryProtocol.buildSafeTxtAttributes` exclude the 6-digit `sessionCode` structurally so secret join PINs are never broadcast over mDNS.
